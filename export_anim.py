@@ -1,5 +1,6 @@
 import bpy, io, math
 from pathlib import Path
+from mathutils import Matrix, Euler, Vector
 
 
 
@@ -124,7 +125,27 @@ def names_sanitize(name, wildcard=""):
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
 
-def anim_keys_elements(fc, dt_input, dt_output, scene, **kwargs):
+def bone_calculate_restPose(bone):
+    # bone = bpy.types.PoseBone(bone)
+    # obj = bpy.types.Object(obj)
+    # arm = bpy.types.Armature(obj.data)
+
+    rotMode = bone.rotation_mode
+    
+    boneMat = Matrix(bone.matrix) # armature-space matrix
+    trans, rot_quat, scale = boneMat.decompose()
+    # print(f"Location: {trans}\nRotation: {rot_quat}\nScale: {scale}")
+
+    if rotMode != 'QUATERNION' or rotMode != 'AXIS_ANGLE':
+        rot = boneMat.to_euler(rotMode)
+    elif rotMode == 'QUATERNION':
+        rot = rot_quat
+    else:
+        rot = None
+        
+    return (trans, rot, scale)
+
+def anim_keys_elements(fc, dt_input, dt_output, scene, bone_transforms, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -165,6 +186,12 @@ def anim_keys_elements(fc, dt_input, dt_output, scene, **kwargs):
         kp = bpy.types.Keyframe(kp)
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
         v = kp.co[1]
+
+        # TODO offset curves by bone's objectspace (armature) transforms
+        if bone_transforms:
+            kp.handle_left[1]
+            kp.co[1]
+            kp.handle_right[1]
 
         if dt_output == 'linear':
             v = linear_converter(kp.co[1])
@@ -207,7 +234,7 @@ def anim_keys_elements(fc, dt_input, dt_output, scene, **kwargs):
     keyString.seek(0)
     return keyString
 
-def anim_animData_elements(fc, node, fc_path, scene, **kwargs):
+def anim_animData_elements(fc, node, fc_path, scene, angularUnit, **kwargs):
     animDataString = io.StringIO()
     animDataString.write('animData {\n') # open the data block
     tab = "  "
@@ -220,7 +247,7 @@ def anim_animData_elements(fc, node, fc_path, scene, **kwargs):
     dt_input = 'time'
     dt_output = ANIM_UNIT_TYPE[fc_unit_type]
     dt_weighted = 1 # Blender always has weighted tangents
-    dt_tan = kwargs["angularUnit"]
+    dt_tan = angularUnit
     dt_preInf = dt_postInf = fc.extrapolation.lower() # set either linear or constant
     
 
@@ -258,17 +285,60 @@ def anim_animData_elements(fc, node, fc_path, scene, **kwargs):
 
 def anim_fcurve_elements(self, objs, scene, sanitize_names, **kwargs):
     fcurveString = io.StringIO()
+    kwargs_mod = kwargs.copy()
 
     for obj in objs:
-        # obj = bpy.types.Object(obj)
         try: obj.animation_data.action.fcurves
         except: AttributeError(self.report({'ERROR'}, obj.name+" has no animation data."))
         else:
+            # Get a dictionary of all the bones and amount of their fcurves
+            # if obj.type == 'ARMATURE':
+            #     fc_list = []
+            #     for fc in obj.animation_data.action.fcurves:
+            #         fc = bpy.types.FCurve(fc)
+
+                    
+            #         if 'pose.bones' in fc.data_path:
+            #             bone_name = fc.data_path.split('"')[1]
+            #             fc_list.append(bone_name)
+
+            #     fc_map = {x: fc_list.count(x) for x in fc_list}
+
+            prev_name = ""
+            attr_i=-1
+            for fc in obj.animation_data.action.fcurves:
+                fc = bpy.types.FCurve(fc)
+
+                if 'pose.bones' in fc.data_path:
+                    bone_name = fc.data_path.split('"')[1]
+
+                    # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
+                    if bone_name not in obj.data.bones: continue
+
+                    if bone_name == prev_name or attr_i == 0:
+                        attr_i += 1
+                    else:
+                        attr_i = 0
+
+                    # proof of concept but here should actually be the code doing stuff here
+                    print(f"'{bone_name}', array_index: {fc.array_index} attr_i: {attr_i}")
+
+                    prev_name = bone_name
+
+
             for group in obj.animation_data.action.groups:
                 # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
                 # Usually they match group names so we should be good.
                 # TODO make sure it's tied to fcurves not groups
                 if group.name != 'Object Transforms' and group.name not in obj.pose.bones: continue
+
+                if group.name in obj.pose.bones:
+                    node = obj.pose.bones[group.name]
+                    kwargs_mod["bone_transforms"] = bone_calculate_restPose(node)
+                else:
+                    node = obj
+                    kwargs_mod["bone_transforms"] = None
+
                 # Loop through the grouped fcurves so we can index them properly
                 for attr_i, fc in enumerate(group.channels):
                     # fc = bpy.types.FCurve(fc)
@@ -283,9 +353,7 @@ def anim_fcurve_elements(self, objs, scene, sanitize_names, **kwargs):
                     # if the fcurve is for a bone
                     if 'pose.bones' in fc.data_path:
                         fc_path = fc.data_path.split('.')[-1] # get only the last part
-                        node = obj.pose.bones[group.name]
                     else:
-                        node = obj
                         fc_path = fc.data_path
 
                     # translate attribute names
@@ -320,9 +388,7 @@ def anim_fcurve_elements(self, objs, scene, sanitize_names, **kwargs):
                     fcurveString.write("{} {} {} {};\n".format(node_name, row, child, attr_i)) 
 
                     # write the animData block
-                    fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs).read())
-
-    
+                    fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs_mod).read())
 
     fcurveString.seek(0)
     return fcurveString
