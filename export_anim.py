@@ -125,27 +125,32 @@ def names_sanitize(name, wildcard=""):
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
 
-def bone_calculate_restPose(bone):
-    # bone = bpy.types.PoseBone(bone)
+def bone_calculate_parentSpace(pBone):
+    # pBone = bpy.types.PoseBone(pBone)
     # obj = bpy.types.Object(obj)
     # arm = bpy.types.Armature(obj.data)
 
-    rotMode = bone.rotation_mode
+    rotMode = pBone.rotation_mode
+
+    # Get bone's parent-space matrix and if bone has no parent, then get armature-space matrix
+    if pBone.parent:
+        boneMat = Matrix(pBone.parent.matrix.inverted() @ pBone.matrix)
+    else:
+        boneMat = pBone.matrix
     
-    boneMat = Matrix(bone.matrix) # armature-space matrix
     trans, rot_quat, scale = boneMat.decompose()
     # print(f"Location: {trans}\nRotation: {rot_quat}\nScale: {scale}")
 
-    if rotMode != 'QUATERNION' or rotMode != 'AXIS_ANGLE':
-        rot = boneMat.to_euler(rotMode)
-    elif rotMode == 'QUATERNION':
+    if rotMode == 'QUATERNION':
         rot = rot_quat
+    elif rotMode != 'AXIS_ANGLE':
+        rot = boneMat.to_euler(rotMode)
     else:
         rot = None
         
     return (trans, rot, scale)
 
-def anim_keys_elements(fc, dt_input, dt_output, scene, bone_transforms, **kwargs):
+def anim_keys_elements(fc, dt_input, dt_output, scene, bone_transforms, fc_id, attr_name, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -187,11 +192,22 @@ def anim_keys_elements(fc, dt_input, dt_output, scene, bone_transforms, **kwargs
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
         v = kp.co[1]
 
-        # TODO offset curves by bone's objectspace (armature) transforms
+        # Offset curves by bone's objectspace (armature) transforms
+        # bone_transforms = False
         if bone_transforms:
-            kp.handle_left[1]
-            kp.co[1]
-            kp.handle_right[1]
+            transform_map = {
+                'translate': bone_transforms[0],
+                'rotate': bone_transforms[1],
+                'scale': bone_transforms[2]
+                }
+
+            # print(f"attribute: {attr_name}, ID: {fc_id}, value: {transform_map[attr_name][fc_id]}")
+            t_value = transform_map[attr_name][fc_id]
+
+            if attr_name != 'scale':
+                kp.handle_left[1] += t_value
+                kp.co[1] += t_value
+                kp.handle_right[1] += t_value
 
         if dt_output == 'linear':
             v = linear_converter(kp.co[1])
@@ -304,91 +320,150 @@ def anim_fcurve_elements(self, objs, scene, sanitize_names, **kwargs):
 
             #     fc_map = {x: fc_list.count(x) for x in fc_list}
 
-            prev_name = ""
-            attr_i=-1
-            for fc in obj.animation_data.action.fcurves:
-                fc = bpy.types.FCurve(fc)
+            attr_names = {
+                    "location": 'translate',
+                    "rotation_euler": 'rotate',
+                    "rotation_quaternion": 'rotate',
+                    "scale": 'scale'
+                    }
 
+            prev_node_name = ""
+            i = 0
+            for attr_i, fc in enumerate(obj.animation_data.action.fcurves):
+                fc = bpy.types.FCurve(fc)
+                fcurveString.write('anim ')
+                
                 if 'pose.bones' in fc.data_path:
-                    bone_name = fc.data_path.split('"')[1]
+                    fc_path = fc.data_path.split('.')[-1] # get only the last part
+                    node_name = fc.data_path.split('"')[1]
+                    node = obj.pose.bones[node_name]
 
                     # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
-                    if bone_name not in obj.data.bones: continue
+                    if node_name not in obj.data.bones: continue
 
-                    if bone_name == prev_name or attr_i == 0:
-                        attr_i += 1
+                    # limit indexing to each bone found in the fcurves
+                    if node_name == prev_node_name or i == 1:
+                        i += 1
                     else:
-                        attr_i = 0
+                        i = 1
+                        # Do calcs only once per bone
+                        # print(f"{i-1}: Node Switched! Bone: {node_name}")
+                        kwargs_mod["bone_transforms"] = bone_calculate_parentSpace(node)
 
-                    # proof of concept but here should actually be the code doing stuff here
-                    print(f"'{bone_name}', array_index: {fc.array_index} attr_i: {attr_i}")
+                    # print(f"{i}: continue...")
 
-                    prev_name = bone_name
-
-
-            for group in obj.animation_data.action.groups:
-                # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
-                # Usually they match group names so we should be good.
-                # TODO make sure it's tied to fcurves not groups
-                if group.name != 'Object Transforms' and group.name not in obj.pose.bones: continue
-
-                if group.name in obj.pose.bones:
-                    node = obj.pose.bones[group.name]
-                    kwargs_mod["bone_transforms"] = bone_calculate_restPose(node)
+                    attr_i = i-1
+                    prev_node_name = node_name
                 else:
+                    attr_i += 1
+                    fc_path = fc.data_path
                     node = obj
                     kwargs_mod["bone_transforms"] = None
 
-                # Loop through the grouped fcurves so we can index them properly
-                for attr_i, fc in enumerate(group.channels):
-                    # fc = bpy.types.FCurve(fc)
-                    fcurveString.write('anim ')
+                kwargs_mod["fc_id"] = fc.array_index
+
+                # translate attribute names
+                try: kwargs_mod["attr_name"] = attr = attr_names[fc_path]
+                except KeyError: attr = fc_path
+
+                # proof of concept but here should actually be the code doing stuff here
+                # print(f"'{node.name}', array_index: {fc.array_index} attr_i: {attr_i}")
+
+                axis_ASCII = 88
+                if fc_path.endswith("quaternion"):
+                    axis_ASCII = 87
+
+                fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+
+                fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
+
+                # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
+                # write the animcurve with data: obj/bone name, children count, fcurve number
+                # if isinstance(node, bpy.types.PoseBone):
+                #     row = len(node.parent_recursive)
+                # else: row = 0 # TODO count hierarchy place for objects
+                row = 0
+
+                wildcard = ""
+                # Clean the name of exported objects/bones
+                if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
+                    wildcard = " "
+                # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
+                if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
+                    node_name = names_sanitize(node.name, wildcard)
+                else:
+                    node_name = node.name = names_sanitize(node.name, wildcard)
+
+                child = len(node.children) # count children
+                fcurveString.write("{} {} {} {};\n".format(node_name, row, child, attr_i)) 
+
+                # write the animData block
+                fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs_mod).read())
+
+
+            # for group in obj.animation_data.action.groups:
+            #     # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
+            #     # Usually they match group names so we should be good.
+            #     # TODO make sure it's tied to fcurves not groups
+            #     if group.name != 'Object Transforms' and group.name not in obj.pose.bones: continue
+
+            #     if group.name in obj.pose.bones:
+            #         node = obj.pose.bones[group.name]
+            #         kwargs_mod["bone_transforms"] = bone_calculate_restPose(node)
+            #     else:
+            #         node = obj
+            #         kwargs_mod["bone_transforms"] = None
+
+            #     # Loop through the grouped fcurves so we can index them properly
+            #     for attr_i, fc in enumerate(group.channels):
+            #         # fc = bpy.types.FCurve(fc)
+            #         fcurveString.write('anim ')
                     
-                    axis_ASCII = 88
-                    if fc.data_path.endswith("quaternion"):
-                        axis_ASCII = 87
+            #         axis_ASCII = 88
+            #         if fc.data_path.endswith("quaternion"):
+            #             axis_ASCII = 87
 
-                    fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+            #         fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
 
-                    # if the fcurve is for a bone
-                    if 'pose.bones' in fc.data_path:
-                        fc_path = fc.data_path.split('.')[-1] # get only the last part
-                    else:
-                        fc_path = fc.data_path
+            #         # if the fcurve is for a bone
+            #         if 'pose.bones' in fc.data_path:
+            #             fc_path = fc.data_path.split('.')[-1] # get only the last part
+            #         else:
+            #             fc_path = fc.data_path
 
-                    # translate attribute names
-                    if fc_path == "location":
-                        attr = 'translate'
-                    elif(fc_path.startswith("rotation")):
-                        attr = 'rotate'
-                    else:
-                        attr = 'scale'
+            #         # translate attribute names
+            #         if fc_path == "location":
+            #             attr = 'translate'
+            #         elif(fc_path.startswith("rotation")):
+            #             attr = 'rotate'
+            #         else:
+            #             attr = 'scale'
 
-                    fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
+            #         fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
 
-                    # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
-                    # write the animcurve with data: obj/bone name, children count, fcurve number
-                    # if isinstance(node, bpy.types.PoseBone):
-                    #     row = len(node.parent_recursive)
-                    # else: row = 0 # TODO count hierarchy place for objects
-                    row = 0
+            #         # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
+            #         # write the animcurve with data: obj/bone name, children count, fcurve number
+            #         # if isinstance(node, bpy.types.PoseBone):
+            #         #     row = len(node.parent_recursive)
+            #         # else: row = 0 # TODO count hierarchy place for objects
+            #         row = 0
 
-                    node_name = node.name
-                    wildcard = ""
-                    # Clean the name of exported objects/bones
-                    if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
-                        wildcard = " "
-                    # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
-                    if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
-                        node_name = names_sanitize(node.name, wildcard)
-                    else:
-                        node_name = node.name = names_sanitize(node.name, wildcard)
+            #         node_name = node.name
+            #         wildcard = ""
+            #         # Clean the name of exported objects/bones
+            #         if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
+            #             wildcard = " "
+            #         # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
+            #         if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
+            #             node_name = names_sanitize(node.name, wildcard)
+            #         else:
+            #             node_name = node.name = names_sanitize(node.name, wildcard)
 
-                    child = len(node.children) # count children
-                    fcurveString.write("{} {} {} {};\n".format(node_name, row, child, attr_i)) 
+            #         child = len(node.children) # count children
+            #         fcurveString.write("{} {} {} {};\n".format(node_name, row, child, attr_i)) 
 
-                    # write the animData block
-                    fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs_mod).read())
+            #         # write the animData block
+            #         fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs_mod).read())
 
     fcurveString.seek(0)
     return fcurveString
