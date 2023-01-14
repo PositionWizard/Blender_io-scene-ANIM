@@ -347,7 +347,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.seek(0)
     return animDataString
 
-def anim_fcurve_elements(self, objs, sanitize_names, global_matrix, **kwargs):
+def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, **kwargs):
     fcurveString = io.StringIO()
     kwargs_mod = kwargs.copy()
 
@@ -361,38 +361,48 @@ def anim_fcurve_elements(self, objs, sanitize_names, global_matrix, **kwargs):
             return -1
 
     def convert_toNewAxis(obj, global_matrix):
-        newMat = global_matrix @ obj.matrix_world
+        # get object transforms aligned to new axis
+        matTransformed = global_matrix @ obj.matrix_world
 
+        # transform armature or mesh by the new axis
+        # this is basically "apply transforms"
         if hasattr (obj.data, 'transform'):
-            obj.data.transform(newMat)
-        for c in obj.children:
-            c.matrix_local = newMat @ c.matrix_local
+            obj.data.transform(global_matrix)
+        # for c in obj.children:
+        #     c.matrix_local = global_matrix @ c.matrix_local
 
-        #obj.matrix_basis.identity()
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.object.mode_set(mode='OBJECT')
 
-
-        obj.matrix_world = obj.matrix_world @ global_matrix.inverted()
+        # transform the object to new axis
+        obj.matrix_world = matTransformed
+        newTransforms = matTransformed.decompose()
+        return newTransforms
 
     def convert_back(obj, global_matrix):
-        obj.matrix_world = obj.matrix_world @ global_matrix
-        oldMat = obj.matrix_world @ global_matrix.inverted()
+        # get object transforms re-aligned back to old axis
+        matTransformed = global_matrix.inverted() @ obj.matrix_world
 
         if hasattr (obj.data, 'transform'):
-            obj.data.transform(oldMat)
-        for c in obj.children:
-            c.matrix_local.identity()
+            obj.data.transform(global_matrix.inverted())
+        # for c in obj.children:
+        #     c.matrix_local.identity()
 
-        obj.matrix_basis.identity()
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.object.mode_set(mode='OBJECT')
-
+        
+        # transform the object to old axis
+        obj.matrix_world = matTransformed
+        
     for obj in objs:
         try: obj.animation_data.action.fcurves
         except: AttributeError(self.report({'ERROR'}, obj.name+" has no animation data."))
         else:
-            convert_toNewAxis(obj, global_matrix) # TODO gotta fix evaluation, converting back and forth doesn't seem to work well
+            # Convert the armature to different axis upon export
+            # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
+            # TODO do object axis conversion for keyframes too
+            kwargs_mod["obj_tForm_newAxis"] = convert_toNewAxis(obj, global_matrix)
+
             # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
             # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
             if obj.type == 'ARMATURE':
@@ -473,12 +483,12 @@ def anim_fcurve_elements(self, objs, sanitize_names, global_matrix, **kwargs):
                 fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
 
                 # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
-                # write the animcurve with data: obj/bone name, children count, fcurve number
                 # if isinstance(node, bpy.types.PoseBone):
                 #     row = len(node.parent_recursive)
                 # else: row = 0 # TODO count hierarchy place for objects
                 row = 0
 
+                # Write data for anim line: obj/bone name, children count, fcurve number
                 wildcard = ""
                 # Clean the name of exported objects/bones
                 if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
@@ -495,7 +505,8 @@ def anim_fcurve_elements(self, objs, sanitize_names, global_matrix, **kwargs):
                 # write the animData block
                 fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
 
-                # convert_back(obj, global_matrix)
+            # Restore original Armature transforms for non-destructive exporting
+            convert_back(obj, global_matrix)
 
 
             # for group in obj.animation_data.action.groups:
@@ -602,11 +613,11 @@ def write(fn, ioStream):
     with open(fn, "w", encoding='ascii') as a_file:
         a_file.write(ioStream.read())
 
-def save_single(operator, scene, depsgraph, filepath="", context_objects=None, **kwargs):
+def save_single(operator, context, depsgraph, filepath="", context_objects=None, **kwargs):
     ioStream = io.StringIO()
-    header, kwargs_mod = anim_header_elements(scene, **kwargs)
+    header, kwargs_mod = anim_header_elements(context.scene, **kwargs)
     ioStream.write(header.read())
-    ioStream.write(anim_fcurve_elements(operator, context_objects, **kwargs_mod).read())
+    ioStream.write(anim_fcurve_elements(operator, context, context_objects, **kwargs_mod).read())
     ioStream.seek(0)
     write(filepath, ioStream)
     
@@ -650,7 +661,7 @@ def save(operator, context,
         kwargs_mod["context_objects"] = ctx_objects
 
         depsgraph = context.evaluated_depsgraph_get()
-        result = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
+        result = save_single(operator, context, depsgraph, filepath, **kwargs_mod)
 
         if active_object and org_mode:
             context.view_layer.objects.active = active_object

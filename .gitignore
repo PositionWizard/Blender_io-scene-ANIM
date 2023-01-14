@@ -1,3 +1,4 @@
 ﻿.vscode/
 __pycache__/
 *.pyc
+.testing_environment
