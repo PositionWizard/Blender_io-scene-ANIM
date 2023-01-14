@@ -2,47 +2,6 @@ import bpy, io, math, time
 from pathlib import Path
 from mathutils import Matrix, Euler, Vector, Quaternion
 
-
-
-# class AnimEXT_OT_AnimExport(bpy.types.Operator):
-#     bl_idname = "maya_anim.export"
-#     bl_label = "Export ANIM"
-#     bl_description = "Export animation curves using Autodesk Maya file format"
-#     bl_options = {'UNDO'}
-
-#     filepath: StringProperty(subtype="FILE_PATH")
-#     filter_glob: StringProperty(
-#         default = "*.anim",
-#         options = {'HIDDEN'},
-#         maxlen= 255
-#     )
-#     filename: StringProperty(
-#         default="untitled.anim"
-#     )
-
-#     def execute(self, context):
-#         #print(self.filepath)
-#         with open(Path(self.filepath).joinpath(self.filepath, self.filename), 'wb') as temp_file:
-#             temp_file.chow
-#             temp_file.write(buff)
-#         return {'FINISHED'}
-
-#     def invoke(self, context, event):
-#         wm = bpy.context.window_manager
-#         wm.fileselect_add(self)
-#         return {'RUNNING_MODAL'}
-
-# ANIM_TIME_UNITS = {
-#     # in fps
-#     "game": 15,
-#     "film": 24,
-#     "pal": 25,
-#     "ntsc": 30,
-#     "show": 48,
-#     "palf": 50,
-#     "ntscf": 60,
-# }
-
 UNITS = {
     "METERS": 1.0,  # Ref unit!
     "KILOMETERS": 0.001,
@@ -133,27 +92,12 @@ def names_sanitize(name, wildcard=""):
     return name_clean
 
 def bone_calculate_parentSpace(bone, rotMode):
-    # pBone = bpy.types.PoseBone(pBone)
-    # obj = bpy.types.Object(obj)
-    # arm = bpy.types.Armature(obj.data)
-    # bone = bpy.types.Bone(bone)
-
     # Get bone's parent-space matrix and if bone has no parent, then get armature-space matrix
     if bone.parent:
         boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)
     else:
         boneMat = bone.matrix_local
-    
-    trans, rot_quat, scale = boneMat.decompose()
-    # print(f"Location: {trans}\nRotation: {rot_quat}\nScale: {scale}")
-
-    # if rotMode == 'QUATERNION':
-    #     rot = rot_quat
-    # elif rotMode != 'AXIS_ANGLE':
-    #     rot = boneMat.to_euler(rotMode)
-    # else:
-    #     rot = None
-        
+     
     return boneMat
 
 # Offset transforms for multiple channels at once per transform type
@@ -181,16 +125,13 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
     if attr_name == 'rotate':
         # get a rotation matrix of the animated values
         if len(keys_array) == 4 and fc.data_path.endswith('quaternion'):
-            # key_rotMatrix = Quaternion(key_rotation).to_matrix().to_4x4()
             key_rotValues = Quaternion(keys_array)
         else:
-            # key_rotMatrix = Euler(key_rotation).to_matrix().to_4x4()
             # a safecheck if there are both euler and quaternion curves but quaternion is currently used
             if rotMode == 'QUATERNION':
                 rotMode = 'XYZ'
             key_rotValues = Euler(keys_array, rotMode).to_quaternion()
 
-        # bone_trans_parentSpace_posed = Matrix.LocRotScale(bone_trans_parentSpace[0], bone_trans_parentSpace[1], bone_trans_parentSpace[2]) @ key_rotMatrix
         key_values_Space[1] = node_rot @ key_rotValues
 
         if fc.data_path.endswith('euler'):
@@ -199,19 +140,12 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
 
         transform_map[attr_name] = key_values_Space[1]
     else:
-        # key_transValues = Vector(keys_array).to_3d()
-        # transform_map[attr_name] = key_values_Space[0] = node_tForm_Space[0] + key_transValues
-
         key_transValues = Vector(keys_array).to_3d()
         # scale curves according to Bone Scale but only for bones
         if apply_scaling:
             key_transValues *= global_scale
         newMat = node_tForm_Space @ Matrix.Translation(key_transValues)
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
-    
-
-    # print(f"attribute: {attr_name}, ID: {fc_id}, value: {transform_map[attr_name][fc_id]}")
-    # t_value = transform_map[attr_name][fc.array_index]
 
     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
     for i, c in enumerate(fcurve_array):
@@ -220,11 +154,6 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
             if k.co[0] == kp.co[0]:
                 kp_value  = k.co[1] # get key's value
                 # Offset curves by bone's parent-space transforms (replace original curves with posed parent-space ones)
-                # if attr_name == 'translate':
-                #     k.handle_left[1] += t_value
-                #     k.co[1] += t_value
-                #     k.handle_right[1] += t_value
-                # elif attr_name == 'rotate':
                 k.handle_left[1] = (k.handle_left[1]-kp_value)+t_value
                 k.co[1] = t_value
                 k.handle_right[1] = (k.handle_right[1]-kp_value)+t_value
@@ -256,8 +185,6 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
 
         # mag = math.sqrt(math.pow(x, 2)+math.pow(y, 2)) # line below is the same but much shorter lmao
         tan_mag = math.hypot(x, y)
-        # if tan_mag < 0.001 and tan_mag > -0.001:
-        #     tan_mag
 
         return round(tan_angle, 6), round(tan_mag, 6)    
 
@@ -271,8 +198,7 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
         kp_value = kp.co[1] # get key's value
 
-        # bone_tForm_parentSpace = False
-        # get the offset transforms for all channels of a data type (either location, rotation or scale) but only at the first occurence of the attribute
+        # Get the offset transforms for all channels of a data type (either location, rotation or scale) but only at the first occurence of the attribute
         # TODO check for keyframes on other channels - this code is bad because it will not execute at all if there are no keyframes on X channel
         if fc.array_index == 0 and attr_name != 'scale':
             # Do calculations for bones
@@ -290,7 +216,6 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
             kp_value = angular_converter(kp.co[1])
 
         keyString.write(f"{kp_value:.6f} ") # write value
-        # keyString.write((f"{v:.6f} ").replace('.', ',')) # write value
 
         if kp.interpolation != 'BEZIER':
             out_tan = ANIM_TANGENT_TYPE[kp.interpolation]
@@ -330,9 +255,6 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     tab = "  "
 
     fc_unit_type = node.bl_rna.properties[fc_path].unit # get the curve unit (degrees, radians, linear, etc.)
-    # for x, y in ANIM_UNIT_TYPE.items():
-    #     fc_unit = fc_unit.replace(x, y)
-    #     break
 
     dt_input = 'time'
     dt_output = ANIM_UNIT_TYPE[fc_unit_type]
@@ -344,12 +266,6 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     # check for any cyclic modifiers and apply a different pre and post infinity type
     for mod in fc.modifiers:
         if mod.type == 'CYCLES':
-            # for x, y in ANIM_CYCLES_TYPE.items():
-            #     if mod.mode_before == x and y is not None:
-            #         dt_preInf = mod.mode_before.replace(x, y)
-                
-            #     if mod.mode_after == x and y is not None:
-            #         dt_postInf = mod.mode_after.replace(x, y)
             if mod.mode_before != 'NONE': dt_preInf = ANIM_CYCLES_TYPE[mod.mode_before]
             if mod.mode_after != 'NONE': dt_postInf = ANIM_CYCLES_TYPE[mod.mode_after]
             break
@@ -388,11 +304,10 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             return -1
 
     def convert_Axes(obj, global_matrix, global_scale, reverse=False):
+        # Revert changes when done with the object
         if reverse:
             global_matrix = global_matrix.inverted()
             global_scale = 1/global_scale
-        # get object transforms aligned to new axis
-        # matTransformed = global_matrix @ obj.matrix_world
 
         if bake_space_transform:
             dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
@@ -402,36 +317,9 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         # this is basically "apply transforms"
         if hasattr (obj.data, 'transform'):
             obj.data.transform(dataMat)
-        # for c in obj.children:
-        #     c.matrix_local = global_matrix @ c.matrix_local
 
         bpy.ops.object.mode_set(mode='EDIT')
         bpy.ops.object.mode_set(mode='OBJECT')
-
-        # transform the object to new axis
-        # obj.matrix_world = matTransformed
-        # newTransforms = matTransformed.decompose()
-        # return newTransforms
-
-    # def convert_back(obj, global_matrix):
-    #     # get object transforms re-aligned back to old axis
-    #     matTransformed = global_matrix.inverted() @ obj.matrix_world
-
-    #     if bake_space_transform:
-    #         dataMat = Matrix.Scale(global_scale, 4) @ global_matrix.inverted()
-    #     else: dataMat = Matrix.Scale(global_scale, 4)
-
-    #     if bake_space_transform:
-    #         if hasattr (obj.data, 'transform'):
-    #             obj.data.transform(dataMat)
-    #         # for c in obj.children:
-    #         #     c.matrix_local.identity()
-
-    #         bpy.ops.object.mode_set(mode='EDIT')
-    #         bpy.ops.object.mode_set(mode='OBJECT')
-        
-    #     # transform the object to old axis
-    #     # obj.matrix_world = matTransformed
     
     for obj in objs:
         try: obj.animation_data.action.fcurves
@@ -454,19 +342,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 fcurves = action.fcurves
 
             kwargs_mod["fcurves"] = fcurves
-            # Get a dictionary of all the bones and amount of their fcurves
-            # if obj.type == 'ARMATURE':
-            #     fc_list = []
-            #     for fc in obj.animation_data.action.fcurves:
-            #         fc = bpy.types.FCurve(fc)
-
-                    
-            #         if 'pose.bones' in fc.data_path:
-            #             bone_name = fc.data_path.split('"')[1]
-            #             fc_list.append(bone_name)
-
-            #     fc_map = {x: fc_list.count(x) for x in fc_list}
-
             prev_node_name = ""
             attr_i = 0
             for fc in fcurves:
@@ -481,27 +356,14 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
                     if node_name not in obj.data.bones: continue
 
-                    # limit indexing to each bone found in the fcurves
-                    # if node_name == prev_node_name:
-                    #     attr_i += 1
-                    # else:
-
                     # Do matrix transformations only once per bone!
                     if node_name != prev_node_name:
-                        # Do calcs only once per bone
-                        # print(f"{i-1}: Node Switched! Bone: {node_name}")
                         kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(obj.data.bones[node_name], node.rotation_mode)
                         kwargs_mod["rotMode"] = node.rotation_mode
 
-                    # print(f"{i}: continue...")
                 else:
                     node = obj
                     node_name = node.name
-                    # if node_name == prev_node_name:
-                    #     attr_i += 1
-                    # else:
-                    #     attr_i = 0
-                    #     prev_node_name = node_name
                     fc_path = fc.data_path
                     kwargs_mod["bone_tForm_parentSpace"] = None
                     kwargs_mod["rotMode"] = node.rotation_mode
@@ -515,9 +377,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 # translate attribute names
                 try: kwargs_mod["attr_name"] = attr = ANIM_ATTR_NAMES[fc_path]
                 except KeyError: attr = fc_path
-
-                # proof of concept but here should actually be the code doing stuff here
-                # print(f"'{node.name}', array_index: {fc.array_index} attr_i: {attr_i}")
 
                 axis_ASCII = 88
                 if fc_path.endswith("quaternion"):
@@ -553,71 +412,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # Restore original Armature transforms for non-destructive exporting
             convert_Axes(obj, global_matrix, global_scale, True)
             bpy.data.actions.remove(action)
-
-
-            # for group in obj.animation_data.action.groups:
-            #     # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
-            #     # Usually they match group names so we should be good.
-            #     # TODO make sure it's tied to fcurves not groups
-            #     if group.name != 'Object Transforms' and group.name not in obj.pose.bones: continue
-
-            #     if group.name in obj.pose.bones:
-            #         node = obj.pose.bones[group.name]
-            #         kwargs_mod["bone_transforms"] = bone_calculate_restPose(node)
-            #     else:
-            #         node = obj
-            #         kwargs_mod["bone_transforms"] = None
-
-            #     # Loop through the grouped fcurves so we can index them properly
-            #     for attr_i, fc in enumerate(group.channels):
-            #         # fc = bpy.types.FCurve(fc)
-            #         fcurveString.write('anim ')
-                    
-            #         axis_ASCII = 88
-            #         if fc.data_path.endswith("quaternion"):
-            #             axis_ASCII = 87
-
-            #         fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
-
-            #         # if the fcurve is for a bone
-            #         if 'pose.bones' in fc.data_path:
-            #             fc_path = fc.data_path.split('.')[-1] # get only the last part
-            #         else:
-            #             fc_path = fc.data_path
-
-            #         # translate attribute names
-            #         if fc_path == "location":
-            #             attr = 'translate'
-            #         elif(fc_path.startswith("rotation")):
-            #             attr = 'rotate'
-            #         else:
-            #             attr = 'scale'
-
-            #         fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
-
-            #         # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
-            #         # write the animcurve with data: obj/bone name, children count, fcurve number
-            #         # if isinstance(node, bpy.types.PoseBone):
-            #         #     row = len(node.parent_recursive)
-            #         # else: row = 0 # TODO count hierarchy place for objects
-            #         row = 0
-
-            #         node_name = node.name
-            #         wildcard = ""
-            #         # Clean the name of exported objects/bones
-            #         if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
-            #             wildcard = " "
-            #         # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
-            #         if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
-            #             node_name = names_sanitize(node.name, wildcard)
-            #         else:
-            #             node_name = node.name = names_sanitize(node.name, wildcard)
-
-            #         child = len(node.children) # count children
-            #         fcurveString.write("{} {} {} {};\n".format(node_name, row, child, attr_i)) 
-
-            #         # write the animData block
-            #         fcurveString.write(anim_animData_elements(fc, node, fc_path, scene, **kwargs_mod).read())
 
     fcurveString.seek(0)
     return fcurveString
@@ -673,9 +467,6 @@ def save_single(operator, context, depsgraph, filepath="", context_objects=None,
 
     operator.report({'INFO'}, "Export finished in %.4f sec." % (time.process_time() - start_time))
     
-    # with open(Path(filepath).joinpath(filepath, filename), 'wb') as temp_file:
-    #     temp_file.chow
-    #     temp_file.write(buff)
     return {'FINISHED'}
 
 def save(operator, context,

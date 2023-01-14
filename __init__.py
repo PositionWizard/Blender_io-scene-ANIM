@@ -183,19 +183,6 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
         keywords["global_matrix"] = global_matrix
         return export_anim.save(self, context, **keywords)
 
-        # with open(Path(self.filepath).joinpath(self.filepath, self.filename), 'wb') as temp_file:
-        #     temp_file.chow
-        #     temp_file.write(buff)
-        # return {'FINISHED'}
-
-    # Optional custom invoke. I wanted to set start and end frame from the scene but that probably defeats the point of the "use_time_range" option.
-    # def invoke(self, context, event):
-    #     wm = bpy.context.window_manager
-    #     wm.fileselect_add(self)
-    #     self.start_time = bpy.context.scene.frame_start
-    #     self.end_time = bpy.context.scene.frame_end
-    #     return {'RUNNING_MODAL'}
-
 class ANIM_PT_export_include(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'
     bl_region_type = 'TOOL_PROPS'
