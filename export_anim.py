@@ -1,4 +1,4 @@
-import bpy, io, math
+import bpy, io, math, time
 from pathlib import Path
 from mathutils import Matrix, Euler, Vector, Quaternion
 
@@ -154,18 +154,19 @@ def bone_calculate_parentSpace(bone, rotMode):
     # else:
     #     rot = None
         
-    return (trans, rot_quat, scale)
+    return boneMat
 
 # Offset transforms for multiple channels at once per transform type
 def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, global_scale, apply_scaling=True):
     key_values_Space = [None]*3
     fcurve_array = []
     keys_array = []
+    node_loc, node_rot, node_scale = node_tForm_Space.decompose()
 
     transform_map = {
         'translate': key_values_Space[0],
         'rotate': key_values_Space[1],
-        'scale': node_tForm_Space[2]
+        'scale': node_scale
     }
     
     # Have to loop through all the curves again in order to find the channels for each attribute of the same name
@@ -190,7 +191,7 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
             key_rotValues = Euler(keys_array, rotMode).to_quaternion()
 
         # bone_trans_parentSpace_posed = Matrix.LocRotScale(bone_trans_parentSpace[0], bone_trans_parentSpace[1], bone_trans_parentSpace[2]) @ key_rotMatrix
-        key_values_Space[1] = node_tForm_Space[1] @ key_rotValues
+        key_values_Space[1] = node_rot @ key_rotValues
 
         if fc.data_path.endswith('euler'):
             # TODO figure out if there's a way to get rotations without gimbal lock
@@ -205,10 +206,8 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
         # scale curves according to Bone Scale but only for bones
         if apply_scaling:
             key_transValues *= global_scale
-        node_tForm_Space_Mat = Matrix.LocRotScale(node_tForm_Space[0], node_tForm_Space[1], node_tForm_Space[2])
-        newMat = node_tForm_Space_Mat @ Matrix.Translation(key_transValues)
+        newMat = node_tForm_Space @ Matrix.Translation(key_transValues)
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
-    
     
 
     # print(f"attribute: {attr_name}, ID: {fc_id}, value: {transform_map[attr_name][fc_id]}")
@@ -388,13 +387,12 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         else:
             return -1
 
-    # TODO fix sampling transforms from current frame
     def convert_Axes(obj, global_matrix, global_scale, reverse=False):
         if reverse:
             global_matrix = global_matrix.inverted()
             global_scale = 1/global_scale
         # get object transforms aligned to new axis
-        matTransformed = global_matrix @ obj.matrix_world
+        # matTransformed = global_matrix @ obj.matrix_world
 
         if bake_space_transform:
             dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
@@ -412,8 +410,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
         # transform the object to new axis
         # obj.matrix_world = matTransformed
-        newTransforms = matTransformed.decompose()
-        return newTransforms
+        # newTransforms = matTransformed.decompose()
+        # return newTransforms
 
     # def convert_back(obj, global_matrix):
     #     # get object transforms re-aligned back to old axis
@@ -445,7 +443,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
             # Convert the armature to different axis upon export
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
-            kwargs_mod["obj_tForm_newAxis"] = convert_Axes(obj, global_matrix, global_scale)
+            convert_Axes(obj, global_matrix, global_scale)
+            kwargs_mod["obj_tForm_newAxis"] = global_matrix
 
             # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
             # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
@@ -662,11 +661,17 @@ def write(fn, ioStream):
 
 def save_single(operator, context, depsgraph, filepath="", context_objects=None, **kwargs):
     ioStream = io.StringIO()
+
+    operator.report({'INFO'}, "Exporting ANIM...%r" % filepath)
+    start_time = time.process_time()
+
     header, kwargs_mod = anim_header_elements(context.scene, **kwargs)
     ioStream.write(header.read())
     ioStream.write(anim_fcurve_elements(operator, context, context_objects, **kwargs_mod).read())
     ioStream.seek(0)
     write(filepath, ioStream)
+
+    operator.report({'INFO'}, "Export finished in %.4f sec." % (time.process_time() - start_time))
     
     # with open(Path(filepath).joinpath(filepath, filename), 'wb') as temp_file:
     #     temp_file.chow
