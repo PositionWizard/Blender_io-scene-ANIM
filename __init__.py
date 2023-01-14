@@ -77,11 +77,11 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
             )
 
     global_scale: FloatProperty(
-            name="Scale",
-            description="Scale animation data\n\n"
-                        "Some software may have all the boens scaled up or down\n"
-                        "like Autodesk Maya having it all good visually but rig scale is 100\n"
-                        "so bones are actually 100 times smaller than they should be",
+            name="Bone Scale",
+            description="Scale bone animation data\n\n"
+                        "Some software may have all the boens scaled up or down.\n"
+                        "Autodesk Maya may have top parent scale of 100 but still look normal,\n"
+                        "however bones are actually 100 times smaller than they should be",
             min=0.001, max=1000.0,
             soft_min=0.01, soft_max=1000.0,
             default=1.0,

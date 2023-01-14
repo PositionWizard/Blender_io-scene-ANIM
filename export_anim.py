@@ -157,7 +157,7 @@ def bone_calculate_parentSpace(bone, rotMode):
     return (trans, rot_quat, scale)
 
 # Offset transforms for multiple channels at once per transform type
-def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp):
+def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, global_scale, apply_scaling=True):
     key_values_Space = [None]*3
     fcurve_array = []
     keys_array = []
@@ -198,7 +198,12 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp):
 
         transform_map[attr_name] = key_values_Space[1]
     else:
+        # key_transValues = Vector(keys_array).to_3d()
+        # transform_map[attr_name] = key_values_Space[0] = node_tForm_Space[0] + key_transValues
+
         key_transValues = Vector(keys_array).to_3d()
+        if apply_scaling:
+            key_transValues *= global_scale
         node_tForm_Space_Mat = Matrix.LocRotScale(node_tForm_Space[0], node_tForm_Space[1], node_tForm_Space[2])
         newMat = node_tForm_Space_Mat @ Matrix.Translation(key_transValues)
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
@@ -224,7 +229,7 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp):
                 k.co[1] = t_value
                 k.handle_right[1] = (k.handle_right[1]-kp_value)+t_value
 
-def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace, fcurves, obj_tForm_newAxis, **kwargs):
+def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace, fcurves, obj_tForm_newAxis, global_scale, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -272,11 +277,11 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
         if fc.array_index == 0 and attr_name != 'scale':
             # Do calculations for bones
             if bone_tForm_parentSpace:
-                offset_transforms(bone_tForm_parentSpace, rotMode, attr_name, fcurves, fc, kp)
+                offset_transforms(bone_tForm_parentSpace, rotMode, attr_name, fcurves, fc, kp, global_scale)
             
             # Do calculations for objects
             else:
-                offset_transforms(obj_tForm_newAxis, rotMode, attr_name, fcurves, fc, kp)
+                offset_transforms(obj_tForm_newAxis, rotMode, attr_name, fcurves, fc, kp, global_scale, False)
 
         if dt_output == 'linear':
             kp_value = linear_converter(kp.co[1])
@@ -368,9 +373,10 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.seek(0)
     return animDataString
 
-def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, **kwargs):
+def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, global_scale, **kwargs):
     fcurveString = io.StringIO()
     kwargs_mod = kwargs.copy()
+    kwargs_mod["global_scale"] = global_scale
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
     def get_boneHierarchy_index(fc):
@@ -387,36 +393,39 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         matTransformed = global_matrix @ obj.matrix_world
 
         if bake_space_transform:
-            # transform armature or mesh by the new axis
-            # this is basically "apply transforms"
-            if hasattr (obj.data, 'transform'):
-                obj.data.transform(global_matrix)
-            # for c in obj.children:
-            #     c.matrix_local = global_matrix @ c.matrix_local
+            dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
+        else: dataMat = Matrix.Scale(global_scale, 4)
 
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.object.mode_set(mode='OBJECT')
+        # transform armature or mesh by the new axis
+        # this is basically "apply transforms"
+        if hasattr (obj.data, 'transform'):
+            obj.data.transform(dataMat)
+        # for c in obj.children:
+        #     c.matrix_local = global_matrix @ c.matrix_local
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.object.mode_set(mode='OBJECT')
 
         # transform the object to new axis
         obj.matrix_world = matTransformed
         newTransforms = matTransformed.decompose()
         return newTransforms
 
-    def convert_back(obj, global_matrix):
-        # get object transforms re-aligned back to old axis
-        matTransformed = global_matrix.inverted() @ obj.matrix_world
+    # def convert_back(obj, global_matrix):
+    #     # get object transforms re-aligned back to old axis
+    #     matTransformed = global_matrix.inverted() @ obj.matrix_world
 
-        if bake_space_transform:
-            if hasattr (obj.data, 'transform'):
-                obj.data.transform(global_matrix.inverted())
-            # for c in obj.children:
-            #     c.matrix_local.identity()
+    #     if bake_space_transform:
+    #         if hasattr (obj.data, 'transform'):
+    #             obj.data.transform(global_matrix.inverted())
+    #         # for c in obj.children:
+    #         #     c.matrix_local.identity()
 
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.object.mode_set(mode='OBJECT')
+    #         bpy.ops.object.mode_set(mode='EDIT')
+    #         bpy.ops.object.mode_set(mode='OBJECT')
         
-        # transform the object to old axis
-        obj.matrix_world = matTransformed
+    #     # transform the object to old axis
+    #     obj.matrix_world = matTransformed
         
     for obj in objs:
         try: obj.animation_data.action.fcurves
@@ -531,7 +540,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
 
             # Restore original Armature transforms for non-destructive exporting
-            convert_back(obj, global_matrix)
+            # convert_back(obj, global_matrix)
 
 
             # for group in obj.animation_data.action.groups:
