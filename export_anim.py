@@ -202,6 +202,7 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
         # transform_map[attr_name] = key_values_Space[0] = node_tForm_Space[0] + key_transValues
 
         key_transValues = Vector(keys_array).to_3d()
+        # scale curves according to Bone Scale but only for bones
         if apply_scaling:
             key_transValues *= global_scale
         node_tForm_Space_Mat = Matrix.LocRotScale(node_tForm_Space[0], node_tForm_Space[1], node_tForm_Space[2])
@@ -269,7 +270,7 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
     for kp in fc.keyframe_points:
         kp = bpy.types.Keyframe(kp)
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
-        kp_value  = kp.co[1] # get key's value
+        kp_value = kp.co[1] # get key's value
 
         # bone_tForm_parentSpace = False
         # get the offset transforms for all channels of a data type (either location, rotation or scale) but only at the first occurence of the attribute
@@ -387,8 +388,11 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         else:
             return -1
 
-    # TODO fix taking transforms from current frame
-    def convert_toNewAxis(obj, global_matrix):
+    # TODO fix sampling transforms from current frame
+    def convert_Axes(obj, global_matrix, global_scale, reverse=False):
+        if reverse:
+            global_matrix = global_matrix.inverted()
+            global_scale = 1/global_scale
         # get object transforms aligned to new axis
         matTransformed = global_matrix @ obj.matrix_world
 
@@ -407,7 +411,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         bpy.ops.object.mode_set(mode='OBJECT')
 
         # transform the object to new axis
-        obj.matrix_world = matTransformed
+        # obj.matrix_world = matTransformed
         newTransforms = matTransformed.decompose()
         return newTransforms
 
@@ -416,8 +420,12 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     #     matTransformed = global_matrix.inverted() @ obj.matrix_world
 
     #     if bake_space_transform:
+    #         dataMat = Matrix.Scale(global_scale, 4) @ global_matrix.inverted()
+    #     else: dataMat = Matrix.Scale(global_scale, 4)
+
+    #     if bake_space_transform:
     #         if hasattr (obj.data, 'transform'):
-    #             obj.data.transform(global_matrix.inverted())
+    #             obj.data.transform(dataMat)
     #         # for c in obj.children:
     #         #     c.matrix_local.identity()
 
@@ -425,22 +433,26 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     #         bpy.ops.object.mode_set(mode='OBJECT')
         
     #     # transform the object to old axis
-    #     obj.matrix_world = matTransformed
-        
+    #     # obj.matrix_world = matTransformed
+    
     for obj in objs:
         try: obj.animation_data.action.fcurves
         except: AttributeError(self.report({'ERROR'}, obj.name+" has no animation data."))
         else:
+            # Create an internal copy of the action to avoid destructive workflow
+            # TODO refactor this whole system to avoid making a copy altogether
+            action = obj.animation_data.action.copy()
+
             # Convert the armature to different axis upon export
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
-            kwargs_mod["obj_tForm_newAxis"] = convert_toNewAxis(obj, global_matrix)
+            kwargs_mod["obj_tForm_newAxis"] = convert_Axes(obj, global_matrix, global_scale)
 
             # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
             # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
             if obj.type == 'ARMATURE':
-                fcurves = sorted(obj.animation_data.action.fcurves, key=get_boneHierarchy_index)
+                fcurves = sorted(action.fcurves, key=get_boneHierarchy_index)
             else:
-                fcurves = obj.animation_data.action.fcurves
+                fcurves = action.fcurves
 
             kwargs_mod["fcurves"] = fcurves
             # Get a dictionary of all the bones and amount of their fcurves
@@ -540,7 +552,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
 
             # Restore original Armature transforms for non-destructive exporting
-            # convert_back(obj, global_matrix)
+            convert_Axes(obj, global_matrix, global_scale, True)
+            bpy.data.actions.remove(action)
 
 
             # for group in obj.animation_data.action.groups:
