@@ -16,7 +16,7 @@ bl_info = {
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
     "blender" : (3, 4, 0),
-    "version" : (1, 0, 0),
+    "version" : (1, 1, 0),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "",
@@ -76,6 +76,25 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
             default=False,
             )
 
+    global_scale: FloatProperty(
+            name="Bone Scale",
+            description="Scale bone animation data\n\n"
+                        "Some software may have all the boens scaled up or down.\n"
+                        "Autodesk Maya may have top parent scale of 100 but still look normal,\n"
+                        "however bones are actually 100 times smaller than they should be",
+            min=0.001, max=1000.0,
+            soft_min=0.01, soft_max=1000.0,
+            default=1.0,
+            )
+
+    bake_space_transform: BoolProperty(
+            name="Apply Transform",
+            description="Bake bones' space transform into armature, avoids getting unwanted\n"
+                        "rotations to objects when target space is not aligned with Blender's space\n\n"
+                        "Disable for Autodesk Maya",
+            default=False,
+            )
+
     object_types: EnumProperty(
             name="Object Types",
             options={'ENUM_FLAG'},
@@ -97,11 +116,10 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
                    ('PROJECT_EXPORT_SPACES', "Project and Export (spaces)", "Sanitize only spaces both in current project and exported file"),
                    ('PROJECT_EXPORT_ALL', "Project and Export", "Sanitize names both in current project and exported file"),
                    ),
-            description="""Should object and bone names be sanitized.
-Removes special characters and replaces them with '_'.
-
-This has to be done at least for spaces to ensure continuity of strings.
-For Autodesk Maya use anything other than '(spaces)' option""",
+            description="Should object and bone names be sanitized.\n"
+                        "Removes special characters and replaces them with '_'.\n\n"
+                        "This has to be done at least for spaces to ensure continuity of strings.\n"
+                        "For Autodesk Maya don't use '(spaces)' options",
             default='EXPORT_ALL',
             )
 
@@ -165,19 +183,6 @@ For Autodesk Maya use anything other than '(spaces)' option""",
         keywords["global_matrix"] = global_matrix
         return export_anim.save(self, context, **keywords)
 
-        # with open(Path(self.filepath).joinpath(self.filepath, self.filename), 'wb') as temp_file:
-        #     temp_file.chow
-        #     temp_file.write(buff)
-        # return {'FINISHED'}
-
-    # Optional custom invoke. I wanted to set start and end frame from the scene but that probably defeats the point of the "use_time_range" option.
-    # def invoke(self, context, event):
-    #     wm = bpy.context.window_manager
-    #     wm.fileselect_add(self)
-    #     self.start_time = bpy.context.scene.frame_start
-    #     self.end_time = bpy.context.scene.frame_end
-    #     return {'RUNNING_MODAL'}
-
 class ANIM_PT_export_include(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'
     bl_region_type = 'TOOL_PROPS'
@@ -204,6 +209,32 @@ class ANIM_PT_export_include(bpy.types.Panel):
         sublayout.prop(operator, "use_active_collection")
 
         layout.column().prop(operator, "object_types")
+
+class ANIM_PT_export_transform(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Transform"
+    bl_parent_id = "FILE_PT_operator"
+
+    @classmethod
+    def poll(cls, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        return operator.bl_idname == "MAYA_ANIM_OT_export"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False  # No animation.
+
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        layout.prop(operator, "global_scale")
+        layout.prop(operator, "axis_forward")
+        layout.prop(operator, "axis_up")
+        layout.prop(operator, "bake_space_transform")
 
 class ANIM_PT_export_animation(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'
@@ -257,6 +288,7 @@ def menu_func_export(self, context):
 classes = (
     ExportANIM,
     ANIM_PT_export_include,
+    ANIM_PT_export_transform,
     ANIM_PT_export_animation
 )
 
