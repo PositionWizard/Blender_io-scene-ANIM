@@ -140,9 +140,10 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
 
         key_values_Space[1] = node_rot @ key_rotValues
 
-        if fc.data_path.endswith('euler'):
-            # TODO figure out if there's a way to get rotations without gimbal lock
-            key_values_Space[1] = key_values_Space[1].to_euler(rotMode)
+        # TODO figure out if there's a way to get rotations without gimbal lock
+        # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
+        # TODO add option to retain original bone rotation
+        key_values_Space[1] = key_values_Space[1].to_euler('XYZ')
 
         transform_map[attr_name] = key_values_Space[1]
     else:
