@@ -15,11 +15,11 @@ bl_info = {
     "name" : "Maya ANIM format",
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
-    "blender" : (3, 4, 0),
-    "version" : (1, 1, 0),
+    "blender" : (3, 3, 0),
+    "version" : (1, 2, 0),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
-    "warning" : "",
+    "warning" : "This addon is still in development.",
 }
 
 if "bpy" in locals():

@@ -91,7 +91,7 @@ def names_sanitize(name, wildcard=""):
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
 
-def bone_calculate_parentSpace(bone, rotMode):
+def bone_calculate_parentSpace(bone):
     # Get bone's parent-space matrix and if bone has no parent, then get armature-space matrix
     if bone.parent:
         boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)
@@ -358,7 +358,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
                     # Do matrix transformations only once per bone!
                     if node_name != prev_node_name:
-                        kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(obj.data.bones[node_name], node.rotation_mode)
+                        kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(obj.data.bones[node_name])
                         kwargs_mod["rotMode"] = node.rotation_mode
 
                 else:
@@ -377,10 +377,11 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 # translate attribute names
                 try: kwargs_mod["attr_name"] = attr = ANIM_ATTR_NAMES[fc_path]
                 except KeyError: attr = fc_path
-
-                axis_ASCII = 88
+                      
                 if fc_path.endswith("quaternion"):
                     axis_ASCII = 87
+                else:
+                    axis_ASCII = 88
 
                 fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
 
