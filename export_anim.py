@@ -2,6 +2,12 @@ import bpy, io, math, time
 from pathlib import Path
 from mathutils import Matrix, Euler, Vector, Quaternion
 
+"""
+Things needed for generating the anim file:
+- list of all the bones that have animation data and the ones that don't but only if any of their recursive children, do
+- 
+"""
+
 UNITS = {
     "METERS": 1.0,  # Ref unit!
     "KILOMETERS": 0.001,
@@ -295,7 +301,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     kwargs_mod["global_scale"] = global_scale
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
-    def get_boneHierarchy_index(fc):
+    def get_boneHierarchy_index(fc, obj):
         if 'pose.bones' in fc.data_path:
             data_name = fc.data_path.split('"')[1]
             data_index = obj.data.bones.find(data_name)
@@ -337,7 +343,26 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
             # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
             if obj.type == 'ARMATURE':
-                fcurves = sorted(action.fcurves, key=get_boneHierarchy_index)
+                # animCheckList = [False]*len(obj.data.bones)
+                # animBones = set()
+                # for fc in action.fcurves:
+                #     data_name = fc.data_path.split('"')[1]
+                #     if data_name in obj.data.bones:
+                #         bone = bpy.types.Bone(obj.data.bones[data_name])
+                #         bone_id = obj.data.bones.find(data_name)
+                #         print(f"Bone: {bone.name}, ID: {bone_id}")
+                #         # animCheckList[bone_id] = True
+                #         animBones.add([bone, ])
+                #         if bone.parent:
+                #             animBones.update(set(sorted(bone.parent_recursive, reverse=True)))
+                #         # for p in bone.parent_recursive:
+                #         #     p_id = obj.data.bones.find(p.name)
+                #         #     animCheckList[p_id] = True
+                            
+                #         continue
+
+                # print(animBones)
+                fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
             else:
                 fcurves = action.fcurves
 
