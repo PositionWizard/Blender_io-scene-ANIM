@@ -1,11 +1,14 @@
 import bpy, io, math, time
-from pathlib import Path
 from mathutils import Matrix, Euler, Vector, Quaternion
 
 """
 Things needed for generating the anim file:
-- list of all the bones that have animation data and the ones that don't but only if any of their recursive children, do
-- 
+- List of all the bones that have animation data and the ones that don't but only if any of their recursive children, do.
+- Have to transform all animated values on a frame at once, even if most of them are missing (for example X can become Z).
+    This means that I can't loop through fcurves when manipulating values because for each found curve I need to find every other curve and update it too.
+    Instead, I should loop through frames that have keys on the bones. First get a bone, then once any keyframe is found on the timeline,
+    transform the values from detected fcurves to new ones for a new axis space. This method can bloat the animation with redundant keys,
+    so to combat this, some reduction and optimization needs to be done.
 """
 
 UNITS = {
@@ -107,7 +110,7 @@ def bone_calculate_parentSpace(bone):
     return boneMat
 
 # Offset transforms for multiple channels at once per transform type
-def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, global_scale, apply_scaling=True):
+def offset_transforms(node_tForm_Space, attr_name, fc, kp, apply_scaling, global_scale, rotMode, ctx_fcurves, **kwargs):
     key_values_Space = [None]*3
     fcurve_array = []
     keys_array = []
@@ -121,7 +124,7 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
     
     # Have to loop through all the curves again in order to find the channels for each attribute of the same name
     # TODO optimize this - maybe I can extract the curves I need without looping trough them?
-    for c in fcurves:
+    for c in ctx_fcurves:
         if fc.data_path == c.data_path:
             fcurve_array.append(c) # store fcurves for later to insert all values at once
             c_value = c.evaluate(kp.co[0]) # get value of curve always for the same frame even if there's no keyframe applied (need a whole rotation matrix)
@@ -165,7 +168,7 @@ def offset_transforms(node_tForm_Space, rotMode, attr_name, fcurves, fc, kp, glo
                 k.co[1] = t_value
                 k.handle_right[1] = (k.handle_right[1]-kp_value)+t_value
 
-def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace, fcurves, obj_tForm_newAxis, global_scale, **kwargs):
+def anim_keys_elements(fc, dt_output, attr_name, bone_tForm_parentSpace, obj_tForm_newAxis, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -199,7 +202,7 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
     fc = bpy.types.FCurve(fc)
     
     prev_interp = None
-    # get keyframe frame and values
+    # get keyframe's frame and values
     for kp in fc.keyframe_points:
         kp = bpy.types.Keyframe(kp)
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
@@ -210,11 +213,11 @@ def anim_keys_elements(fc, dt_output, attr_name, rotMode, bone_tForm_parentSpace
         if fc.array_index == 0 and attr_name != 'scale':
             # Do calculations for bones
             if bone_tForm_parentSpace:
-                offset_transforms(bone_tForm_parentSpace, rotMode, attr_name, fcurves, fc, kp, global_scale)
+                offset_transforms(bone_tForm_parentSpace, attr_name, fc, kp, True, **kwargs)
             
             # Do calculations for objects
             else:
-                offset_transforms(obj_tForm_newAxis, rotMode, attr_name, fcurves, fc, kp, global_scale, False)
+                offset_transforms(obj_tForm_newAxis, attr_name, fc, kp, False, **kwargs)
 
         if dt_output == 'linear':
             kp_value = linear_converter(kp.co[1])
@@ -282,7 +285,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.write(tab+'output {};\n'.format(dt_output))
     animDataString.write(tab+'weighted {};\n'.format(dt_weighted))
 
-    # check keys if any of them 'fixed' tangents (Blender's "Aligned")
+    # check keys if any of them are 'fixed' tangents (Blender's "Aligned")
     if any([kp for kp in fc.keyframe_points if kp.handle_left_type == 'ALIGNED' or kp.handle_right_type == 'ALIGNED']):
         animDataString.write(tab+'tangentAngleUnit {};\n'.format(dt_tan))
 
@@ -300,6 +303,65 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     fcurveString = io.StringIO()
     kwargs_mod = kwargs.copy()
     kwargs_mod["global_scale"] = global_scale
+
+    def frames_matching(action, data_path):
+        frames = set()
+        for fc in action.fcurves:
+            if fc.data_path == data_path:
+                fri = [kp.co[0] for kp in fc.keyframe_points]
+                frames.update(fri)
+        return frames
+
+    def get_node_info(node):
+        # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
+        # if isinstance(node, bpy.types.PoseBone):
+        #     row = len(node.parent_recursive)
+        # else: row = 0 # TODO count hierarchy place for objects
+        row = 0
+
+        # Write data for anim line: obj/bone name, children count, fcurve number
+        wildcard = ""
+        # Clean the name of exported objects/bones
+        if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
+            wildcard = " "
+        # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
+        if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
+            node_name_final = names_sanitize(node.name, wildcard)
+        else:
+            node_name_final = node.name = names_sanitize(node.name, wildcard)
+
+        child = len(node.children) # count children
+
+        return node_name_final, row, child
+    
+    def write_fcurve(fc, node, node_info, attr_i, **kwargs):
+        fc = bpy.types.FCurve(fc)
+        kwargs_mod = kwargs.copy()
+        fcurveString.write('anim ')
+
+        if 'pose.bones' in fc.data_path:
+            fc_path = fc.data_path.split('.')[-1] # get only the last part
+        else:
+            fc_path = fc.data_path
+
+        # translate attribute names
+        try: kwargs_mod["attr_name"] = attr = ANIM_ATTR_NAMES[fc_path]
+        except KeyError: attr = fc_path
+                
+        if fc_path.endswith("quaternion"):
+            axis_ASCII = 87
+        else:
+            axis_ASCII = 88
+
+        
+        fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+        node_name_final, row, child = node_info
+
+        fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write basic node info
+        fcurveString.write("{} {} {} {};\n".format(node_name_final, row, child, attr_i)) # write node name and detailed info
+
+        # write the animData block
+        fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
     def get_boneHierarchy_index(fc, obj):
@@ -340,101 +402,89 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
             convert_Axes(obj, global_matrix, global_scale)
             kwargs_mod["obj_tForm_newAxis"] = global_matrix
+            objFcurves = []
 
-            # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
-            # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
             if obj.type == 'ARMATURE':
-                # animCheckList = [False]*len(obj.data.bones)
-                # animBones = set()
-                # for fc in action.fcurves:
-                #     data_name = fc.data_path.split('"')[1]
-                #     if data_name in obj.data.bones:
-                #         bone = bpy.types.Bone(obj.data.bones[data_name])
-                #         bone_id = obj.data.bones.find(data_name)
-                #         print(f"Bone: {bone.name}, ID: {bone_id}")
-                #         # animCheckList[bone_id] = True
-                #         animBones.add([bone, ])
-                #         if bone.parent:
-                #             animBones.update(set(sorted(bone.parent_recursive, reverse=True)))
-                #         # for p in bone.parent_recursive:
-                #         #     p_id = obj.data.bones.find(p.name)
-                #         #     animCheckList[p_id] = True
-                            
-                #         continue
-
-                # print(animBones)
+                # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
+                # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
-            else:
-                fcurves = action.fcurves
 
-            kwargs_mod["fcurves"] = fcurves
-            prev_node_name = ""
-            attr_i = 0
-            for fc in fcurves:
-                fc = bpy.types.FCurve(fc)
-                fcurveString.write('anim ')
+                boneCheckList = [None]*len(obj.data.bones)
+                requiredBones = set()
                 
-                if 'pose.bones' in fc.data_path:
-                    fc_path = fc.data_path.split('.')[-1] # get only the last part
-                    node_name = fc.data_path.split('"')[1]
-                    node = obj.pose.bones[node_name]
+                # get a list of bones that need to have "anim" line written down (also the ones that don't but only if any of their recursive children do)
+                # TODO include an entire hierarchy (limit by index, not recursive children)
+                for fc in fcurves:
+                    if 'pose.bones' in fc.data_path:
+                        data_name = fc.data_path.split('"')[1]
+                        if data_name in obj.data.bones:
+                            bone = bpy.types.Bone(obj.data.bones[data_name])
+                            bone_id = obj.data.bones.find(data_name)
 
-                    # Sometimes there can be rogue fcurves that don't belong to anything so let's skip them.
-                    if node_name not in obj.data.bones: continue
+                            # add the bone to a list and mark as animated bone
+                            if boneCheckList[bone_id] == None:
+                                boneCheckList[bone_id] = [bone, True, [fc]]                            
+                            else:
+                                # update the entry with any fcurves left
+                                boneCheckList[bone_id][2].append(fc)
 
-                    # Do matrix transformations only once per bone!
-                    if node_name != prev_node_name:
-                        kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(obj.data.bones[node_name])
-                        kwargs_mod["rotMode"] = node.rotation_mode
+                            # make a set of all the parents of the animated bone
+                            if bone.parent:
+                                requiredBones.update(set(bone.parent_recursive))
+                    else:
+                        objFcurves.append(fc)
 
-                else:
-                    node = obj
-                    node_name = node.name
-                    fc_path = fc.data_path
-                    kwargs_mod["bone_tForm_parentSpace"] = None
-                    kwargs_mod["rotMode"] = node.rotation_mode
+                # look for all the required but non-animated bones and flag them to skip keying
+                for b in requiredBones:
+                    b = bpy.types.Bone(b)
+                    b_id = obj.data.bones.find(b.name)
+                    if not boneCheckList[b_id]:
+                        boneCheckList[b_id] = [b, False, []]
+            
+                # write obj animation data
+                objFc_i = 0
+                obj_info = get_node_info(obj)
+                kwargs_mod["bone_tForm_parentSpace"] = None
+                kwargs_mod["rotMode"] = obj.rotation_mode
+                kwargs_mod["ctx_fcurves"] = objFcurves
+                for fc in objFcurves:
+                    write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
+                    objFc_i += 1
 
-                if node_name == prev_node_name:
-                    attr_i += 1
-                else:
-                    attr_i = 0
-                    prev_node_name = node_name
+                # write bone animation data
+                # fcBoneData structure: [Bone], [animated?], [list: ActionFCurves]
+                for fcBoneData in boneCheckList:
+                    if fcBoneData != None:
+                        bone_info = get_node_info(fcBoneData[0])
+                        if fcBoneData[1]:
+                            pbone = obj.pose.bones[fcBoneData[0].name]
+                            # print(f"bone: {bone.name}, has animation: {fcBoneData[1]}, fcurves: {len(fcBoneData[2])}")
 
-                # translate attribute names
-                try: kwargs_mod["attr_name"] = attr = ANIM_ATTR_NAMES[fc_path]
-                except KeyError: attr = fc_path
-                      
-                if fc_path.endswith("quaternion"):
-                    axis_ASCII = 87
-                else:
-                    axis_ASCII = 88
+                            # Do matrix transformations only once per bone!
+                            kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(fcBoneData[0])
+                            kwargs_mod["rotMode"] = pbone.rotation_mode
+                            kwargs_mod["ctx_fcurves"] = fcBoneData[2]
 
-                fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+                            boneFc_i = 0
+                            for fc in fcBoneData[2]:
+                                write_fcurve(fc, pbone, bone_info, boneFc_i, **kwargs_mod)
+                                boneFc_i += 1
+                        else:
+                            # if bone has no animation data, write a basic anim line and return
+                            node_name_final, row, child = bone_info
+                            fcurveString.write("anim {} {} {} {};\n".format(node_name_final, row, child, 0))
+                                
+            else:
+                objFcurves = action.fcurves
 
-                fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write the fcurve down  
-
-                # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
-                # if isinstance(node, bpy.types.PoseBone):
-                #     row = len(node.parent_recursive)
-                # else: row = 0 # TODO count hierarchy place for objects
-                row = 0
-
-                # Write data for anim line: obj/bone name, children count, fcurve number
-                wildcard = ""
-                # Clean the name of exported objects/bones
-                if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
-                    wildcard = " "
-                # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
-                if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
-                    node_name_final = names_sanitize(node.name, wildcard)
-                else:
-                    node_name_final = node.name = names_sanitize(node.name, wildcard)
-
-                child = len(node.children) # count children
-                fcurveString.write("{} {} {} {};\n".format(node_name_final, row, child, attr_i))
-
-                # write the animData block
-                fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
+                # write obj animation data
+                objFc_i = 0
+                obj_info = get_node_info(obj)
+                kwargs_mod["bone_tForm_parentSpace"] = None
+                kwargs_mod["rotMode"] = obj.rotation_mode
+                for fc in objFcurves:
+                    write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
+                    objFc_i += 1
 
             # Restore original Armature transforms for non-destructive exporting
             convert_Axes(obj, global_matrix, global_scale, True)
