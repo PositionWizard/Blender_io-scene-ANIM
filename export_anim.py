@@ -9,6 +9,10 @@ Things needed for generating the anim file:
     Instead, I should loop through frames that have keys on the bones. First get a bone, then once any keyframe is found on the timeline,
     transform the values from detected fcurves to new ones for a new axis space. This method can bloat the animation with redundant keys,
     so to combat this, some reduction and optimization needs to be done.
+
+TODO
+- Convert Quaternions to Eulers when exporting
+- Create FCurves when needed (space conversion)
 """
 
 UNITS = {
@@ -112,7 +116,6 @@ def bone_calculate_parentSpace(bone):
 # Offset transforms for multiple channels at once per transform type
 def offset_transforms(node_tForm_Space, attr_name, fc, kp, apply_scaling, global_scale, rotMode, ctx_fcurves, **kwargs):
     key_values_Space = [None]*3
-    fcurve_array = []
     keys_array = []
     node_loc, node_rot, node_scale = node_tForm_Space.decompose()
 
@@ -125,10 +128,8 @@ def offset_transforms(node_tForm_Space, attr_name, fc, kp, apply_scaling, global
     # Have to loop through all the curves again in order to find the channels for each attribute of the same name
     # TODO optimize this - maybe I can extract the curves I need without looping trough them?
     for c in ctx_fcurves:
-        if fc.data_path == c.data_path:
-            fcurve_array.append(c) # store fcurves for later to insert all values at once
-            c_value = c.evaluate(kp.co[0]) # get value of curve always for the same frame even if there's no keyframe applied (need a whole rotation matrix)
-            keys_array.append(c_value) # store values on keyframes to later form full rotation
+        c_value = c.evaluate(kp.co[0]) # get value of curve always for the same frame even if there's no keyframe applied (need a whole rotation matrix)
+        keys_array.append(c_value) # store values on keyframes to later form full rotation
 
     # Transform rotation and translation curves to a new space
     if attr_name == 'rotate':
@@ -158,7 +159,7 @@ def offset_transforms(node_tForm_Space, attr_name, fc, kp, apply_scaling, global
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
 
     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
-    for i, c in enumerate(fcurve_array):
+    for i, c in enumerate(ctx_fcurves):
         t_value = transform_map[attr_name][i]
         for k in c.keyframe_points:
             if k.co[0] == kp.co[0]:
@@ -210,6 +211,7 @@ def anim_keys_elements(fc, dt_output, attr_name, bone_tForm_parentSpace, obj_tFo
 
         # Get the offset transforms for all channels of a data type (either location, rotation or scale) but only at the first occurence of the attribute
         # TODO check for keyframes on other channels - this code is bad because it will not execute at all if there are no keyframes on X channel
+        # TODO maybe instead of doing offset calcs for each keyframe, I can shift this to each bone and pass values to keyframes later instead? Should make this waaaay more performant
         if fc.array_index == 0 and attr_name != 'scale':
             # Do calculations for bones
             if bone_tForm_parentSpace:
@@ -304,14 +306,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     kwargs_mod = kwargs.copy()
     kwargs_mod["global_scale"] = global_scale
 
-    def frames_matching(action, data_path):
-        frames = set()
-        for fc in action.fcurves:
-            if fc.data_path == data_path:
-                fri = [kp.co[0] for kp in fc.keyframe_points]
-                frames.update(fri)
-        return frames
-
     def get_node_info(node):
         # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
         # if isinstance(node, bpy.types.PoseBone):
@@ -402,7 +396,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
             convert_Axes(obj, global_matrix, global_scale)
             kwargs_mod["obj_tForm_newAxis"] = global_matrix
-            objFcurves = []
+            objFcurves = [[] for i in range(5)]
 
             if obj.type == 'ARMATURE':
                 # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
@@ -411,28 +405,42 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
                 boneCheckList = [None]*len(obj.data.bones)
                 requiredBones = set()
+
+                pathMap = {
+                    "location": 0,
+                    "rotation_euler": 1,
+                    "rotation_quaternion": 2,
+                    "scale": 3,
+                    # "default": 4
+                }
                 
                 # get a list of bones that need to have "anim" line written down (also the ones that don't but only if any of their recursive children do)
                 # TODO include an entire hierarchy (limit by index, not recursive children)
                 for fc in fcurves:
                     if 'pose.bones' in fc.data_path:
                         data_name = fc.data_path.split('"')[1]
+                        fc_path = fc.data_path.split('.')[-1] # get only the last part
                         if data_name in obj.data.bones:
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
+                            array_id = pathMap.get(fc_path, 4)
                             # add the bone to a list and mark as animated bone
                             if boneCheckList[bone_id] == None:
-                                boneCheckList[bone_id] = [bone, True, [fc]]                            
+                                fc_list = [[] for i in range(5)]
+                                fc_list[array_id].append(fc)
+                                boneCheckList[bone_id] = [bone, True, fc_list]
                             else:
                                 # update the entry with any fcurves left
-                                boneCheckList[bone_id][2].append(fc)
+                                boneCheckList[bone_id][2][array_id].append(fc)
+
 
                             # make a set of all the parents of the animated bone
                             if bone.parent:
                                 requiredBones.update(set(bone.parent_recursive))
                     else:
-                        objFcurves.append(fc)
+                        array_id = pathMap.get(fc.data_path, 4)
+                        objFcurves[array_id].append(fc)
 
                 # look for all the required but non-animated bones and flag them to skip keying
                 for b in requiredBones:
@@ -446,13 +454,15 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 obj_info = get_node_info(obj)
                 kwargs_mod["bone_tForm_parentSpace"] = None
                 kwargs_mod["rotMode"] = obj.rotation_mode
-                kwargs_mod["ctx_fcurves"] = objFcurves
-                for fc in objFcurves:
-                    write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
-                    objFc_i += 1
+                for fc_group in objFcurves:
+                    kwargs_mod["ctx_fcurves"] = fc_group
+                    for fc in fc_group:
+                        write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
+                        objFc_i += 1
 
                 # write bone animation data
                 # fcBoneData structure: [Bone], [animated?], [list: ActionFCurves]
+                # new structure is now: [Bone], [animated?], [list(ActionFCurves):  [location], [rotation_euler], [rotation_quaternion], [scale], [other custom data]]
                 for fcBoneData in boneCheckList:
                     if fcBoneData != None:
                         bone_info = get_node_info(fcBoneData[0])
@@ -463,12 +473,22 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                             # Do matrix transformations only once per bone!
                             kwargs_mod["bone_tForm_parentSpace"] = bone_calculate_parentSpace(fcBoneData[0])
                             kwargs_mod["rotMode"] = pbone.rotation_mode
-                            kwargs_mod["ctx_fcurves"] = fcBoneData[2]
 
                             boneFc_i = 0
-                            for fc in fcBoneData[2]:
-                                write_fcurve(fc, pbone, bone_info, boneFc_i, **kwargs_mod)
-                                boneFc_i += 1
+                            for fc_group in fcBoneData[2]:
+                                kwargs_mod["ctx_fcurves"] = fc_group
+                                # frames = set()
+                                # for fc in fc_group:
+                                #     fri = [kp.co[0] for kp in fc.keyframe_points]
+                                #     frames.update(fri)
+                                # fc_array = []
+                                # for fr in frames:
+                                #     for fc in fc_group:
+                                #         fc_value = fc.evaluate(fr)
+                                #         fc_array.append(fc_value)
+                                for fc in fc_group:
+                                    write_fcurve(fc, pbone, bone_info, boneFc_i, **kwargs_mod)
+                                    boneFc_i += 1
                         else:
                             # if bone has no animation data, write a basic anim line and return
                             node_name_final, row, child = bone_info
@@ -482,6 +502,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 obj_info = get_node_info(obj)
                 kwargs_mod["bone_tForm_parentSpace"] = None
                 kwargs_mod["rotMode"] = obj.rotation_mode
+                kwargs_mod["ctx_fcurves"] = objFcurves
                 for fc in objFcurves:
                     write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
                     objFc_i += 1
