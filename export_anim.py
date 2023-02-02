@@ -176,9 +176,10 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
                 kp_found = True
                 break # break early from looking for another keyframe since there's no need
             
-        # if not kp_found:
-            # fc.keyframe_points.insert(frame=frame, value=t_value)
-            # print(f"frame: {frame}, value: {t_value}")
+        # insert keyframes for curves with missing keys on evaluated frame (this is pretty much baking)
+        # TODO do a proper fcurve swapping when doing axis conversions and armature transformations, instead of baking all relevant channels
+        if not kp_found:
+            fc.keyframe_points.insert(frame=frame, value=t_value)
 
 def anim_keys_elements(fc, dt_output, **kwargs):
     keyString = io.StringIO()
@@ -369,20 +370,19 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     frames.update(fri)
                     
                 # offset transforms for keys on all fcurves at once for each frame
-                for fr in frames:
-                    keys_array = []
+                keys_array_list = [[] for f in frames]
+                for j, fr in enumerate(frames):
                     # get all keyframe values for this data path
                     for fc in fc_group:
                         fc_value = fc.evaluate(fr)
-                        keys_array.append(fc_value)
+                        keys_array_list[j].append(fc_value)
 
-                    # if node.name == 'LeftShoulder':
-                    #     print(f"Node: {node.name}, DataPath: {FCURVE_PATHS_ID_TO_NAME[i]}, Frame: {fr}, Keys: {keys_array}")
-
-                    # Do calculations for curves
-                    offset_transforms(node_tForm_Space, fr, fc_group, FCURVE_PATHS_ID_TO_NAME[i], keys_array, apply_boneScale, **kwargs_mod)
+                for j, fr in enumerate(frames):
+                    # Do calculations for entire frames
+                    offset_transforms(node_tForm_Space, fr, fc_group, FCURVE_PATHS_ID_TO_NAME[i], keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for fc in fc_group:
+                fc.update()
                 write_fcurve(fc, node, node_info, FCURVE_PATHS_ID_TO_NAME[i], fc_i, **kwargs_mod)
                 fc_i += 1
 
