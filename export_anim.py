@@ -88,6 +88,16 @@ ANIM_ATTR_NAMES = {
     "scale": 'scale'
 }
 
+FCURVE_PATHS_NAME_TO_ID = {
+    "location": 0,
+    "rotation_euler": 1,
+    "rotation_quaternion": 2,
+    "scale": 3,
+    "custom": 4
+}
+
+FCURVE_PATHS_ID_TO_NAME = {v: k for k, v in FCURVE_PATHS_NAME_TO_ID.items()}
+
 # Return a convertor between specified units.
 def units_convertor(u_from, u_to):
     conv = UNITS[u_to] / UNITS[u_from]
@@ -114,13 +124,9 @@ def bone_calculate_parentSpace(bone):
     return boneMat
 
 # Offset transforms for multiple channels at once per transform type
-def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, apply_scaling, global_scale, rotMode, **kwargs):
+def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, apply_scaling, attr_name, global_scale, rotMode, **kwargs):
     key_values_Space = [None]*3
     node_loc, node_rot, node_scale = node_tForm_Space.decompose()
-
-    # translate attribute names
-    try: attr_name = ANIM_ATTR_NAMES[fc_path]
-    except KeyError: attr_name = fc_path
 
     transform_map = {
         'translate': key_values_Space[0],
@@ -158,6 +164,7 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
     for i, fc in enumerate(fc_group):
         t_value = transform_map[attr_name][i]
+        kp_found = False
         for k in fc.keyframe_points:
             if k.co[0] == frame:
                 kp_value  = k.co[1] # get key's value
@@ -165,65 +172,15 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
                 k.handle_left[1] = (k.handle_left[1]-kp_value)+t_value
                 k.co[1] = t_value
                 k.handle_right[1] = (k.handle_right[1]-kp_value)+t_value
+
+                kp_found = True
                 break # break early from looking for another keyframe since there's no need
+            
+        # if not kp_found:
+            # fc.keyframe_points.insert(frame=frame, value=t_value)
+            # print(f"frame: {frame}, value: {t_value}")
 
-# Offset transforms for multiple channels at once per transform type
-# def offset_transforms(node_tForm_Space, attr_name, fc, kp, apply_scaling, global_scale, rotMode, ctx_fcurves, **kwargs):
-#     key_values_Space = [None]*3
-#     keys_array = []
-#     node_loc, node_rot, node_scale = node_tForm_Space.decompose()
-
-#     transform_map = {
-#         'translate': key_values_Space[0],
-#         'rotate': key_values_Space[1],
-#         'scale': node_scale
-#     }
-    
-#     # Have to loop through all the curves again in order to find the channels for each attribute of the same name
-#     # TODO optimize this - maybe I can extract the curves I need without looping trough them?
-#     for c in ctx_fcurves:
-#         c_value = c.evaluate(kp.co[0]) # get value of curve always for the same frame even if there's no keyframe applied (need a whole rotation matrix)
-#         keys_array.append(c_value) # store values on keyframes to later form full rotation
-
-#     # Transform rotation and translation curves to a new space
-#     if attr_name == 'rotate':
-#         # get a rotation matrix of the animated values
-#         if len(keys_array) == 4 and fc.data_path.endswith('quaternion'):
-#             key_rotValues = Quaternion(keys_array)
-#         else:
-#             # a safecheck if there are both euler and quaternion curves but quaternion is currently used
-#             if rotMode == 'QUATERNION':
-#                 rotMode = 'XYZ'
-#             key_rotValues = Euler(keys_array, rotMode).to_quaternion()
-
-#         key_values_Space[1] = node_rot @ key_rotValues
-
-#         # TODO figure out if there's a way to get rotations without gimbal lock
-#         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
-#         # TODO add option to retain original bone rotation
-#         key_values_Space[1] = key_values_Space[1].to_euler('XYZ')
-
-#         transform_map[attr_name] = key_values_Space[1]
-#     else:
-#         key_transValues = Vector(keys_array).to_3d()
-#         # scale curves according to Bone Scale but only for bones
-#         if apply_scaling:
-#             key_transValues *= global_scale
-#         newMat = node_tForm_Space @ Matrix.Translation(key_transValues)
-#         transform_map[attr_name] = key_values_Space[0] = newMat.translation
-
-#     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
-#     for i, c in enumerate(ctx_fcurves):
-#         t_value = transform_map[attr_name][i]
-#         for k in c.keyframe_points:
-#             if k.co[0] == kp.co[0]:
-#                 kp_value  = k.co[1] # get key's value
-#                 # Offset curves by bone's parent-space transforms (replace original curves with posed parent-space ones)
-#                 k.handle_left[1] = (k.handle_left[1]-kp_value)+t_value
-#                 k.co[1] = t_value
-#                 k.handle_right[1] = (k.handle_right[1]-kp_value)+t_value
-
-def anim_keys_elements(fc, dt_output, attr_name, **kwargs):
+def anim_keys_elements(fc, dt_output, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -262,18 +219,6 @@ def anim_keys_elements(fc, dt_output, attr_name, **kwargs):
         kp = bpy.types.Keyframe(kp)
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
         kp_value = kp.co[1] # get key's value
-
-        # Get the offset transforms for all channels of a data type (either location, rotation or scale) but only at the first occurence of the attribute
-        # TODO check for keyframes on other channels - this code is bad because it will not execute at all if there are no keyframes on X channel
-        # TODO maybe instead of doing offset calcs for each keyframe, I can shift this to each bone and pass values to keyframes later instead? Should make this waaaay more performant
-        # if fc.array_index == 0 and attr_name != 'scale':
-        #     # Do calculations for bones
-        #     if bone_tForm_parentSpace:
-        #         offset_transforms(bone_tForm_parentSpace, attr_name, fc, kp, True, **kwargs)
-            
-        #     # Do calculations for objects
-        #     else:
-        #         offset_transforms(obj_tForm_newAxis, attr_name, fc, kp, False, **kwargs)
 
         if dt_output == 'linear':
             kp_value = linear_converter(kp.co[1])
@@ -382,42 +327,39 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
         return node_name_final, row, child
     
-    def write_fcurve(fc, node, node_info, attr_i, **kwargs):
+    def write_fcurve(fc, node, node_info, fc_path, attr_i, attr_name, **kwargs):
         fc = bpy.types.FCurve(fc)
-        kwargs_mod = kwargs.copy()
         fcurveString.write('anim ')
-
-        if 'pose.bones' in fc.data_path:
-            fc_path = fc.data_path.split('.')[-1] # get only the last part
-        else:
-            fc_path = fc.data_path
-
-        # translate attribute names
-        try: kwargs_mod["attr_name"] = attr = ANIM_ATTR_NAMES[fc_path]
-        except KeyError: attr = fc_path
                 
         if fc_path.endswith("quaternion"):
             axis_ASCII = 87
         else:
             axis_ASCII = 88
-
         
         fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
         node_name_final, row, child = node_info
 
-        fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr, fc_chan)) # write basic node info
+        fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr_name, fc_chan)) # write basic node info
         fcurveString.write("{} {} {} {};\n".format(node_name_final, row, child, attr_i)) # write node name and detailed info
 
         # write the animData block
-        fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs_mod).read())
+        fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs).read())
 
-    def prep_node(node, node_info, fcGroups, fc_type, node_tForm_Space, isBone, **kwargs):
+    # Prepare object or bone to apply offset transforms for all channels of a data type (either location, rotation or scale), all at once
+    def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, **kwargs):
         kwargs_mod = kwargs.copy()
         kwargs_mod["rotMode"] = node.rotation_mode
 
         fc_i = 0
         for i, fc_group in enumerate(fcGroups):
-            kwargs_mod["ctx_fcurves"] = fc_group
+            # translate attribute names
+            try: attr = ANIM_ATTR_NAMES[FCURVE_PATHS_ID_TO_NAME[i]]
+            except KeyError: attr = FCURVE_PATHS_ID_TO_NAME[i]
+
+            # sort the fcurves according to array_index
+            fc_group = sorted(fc_group, key=lambda fc: fc.array_index)
+
+            kwargs_mod["attr_name"] = attr
 
             # do offsets only for locations and rotations, skip other data
             if i<3:
@@ -426,17 +368,22 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     fri = [kp.co[0] for kp in fc.keyframe_points]
                     frames.update(fri)
                     
+                # offset transforms for keys on all fcurves at once for each frame
                 for fr in frames:
                     keys_array = []
+                    # get all keyframe values for this data path
                     for fc in fc_group:
                         fc_value = fc.evaluate(fr)
                         keys_array.append(fc_value)
 
+                    # if node.name == 'LeftShoulder':
+                    #     print(f"Node: {node.name}, DataPath: {FCURVE_PATHS_ID_TO_NAME[i]}, Frame: {fr}, Keys: {keys_array}")
+
                     # Do calculations for curves
-                    offset_transforms(node_tForm_Space, fr, fc_group, fc_type[i], keys_array, isBone, **kwargs_mod)                   
+                    offset_transforms(node_tForm_Space, fr, fc_group, FCURVE_PATHS_ID_TO_NAME[i], keys_array, apply_boneScale, **kwargs_mod)
 
             for fc in fc_group:
-                write_fcurve(fc, node, node_info, fc_i, **kwargs_mod)
+                write_fcurve(fc, node, node_info, FCURVE_PATHS_ID_TO_NAME[i], fc_i, **kwargs_mod)
                 fc_i += 1
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
@@ -477,18 +424,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # Convert the armature to different axis upon export
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
             convert_Axes(obj, global_matrix, global_scale)
-            # kwargs_mod["obj_tForm_newAxis"] = global_matrix
             objFcurves = [[] for i in range(5)]
-
-            pathMap = {
-                    "location": 0,
-                    "rotation_euler": 1,
-                    "rotation_quaternion": 2,
-                    "scale": 3,
-                    "custom": 4
-                }
-
-            inv_pathMap = {v: k for k, v in pathMap.items()}
 
             if obj.type == 'ARMATURE':
                 # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
@@ -508,7 +444,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
-                            array_id = pathMap.get(fc_path, 4)
+                            array_id = FCURVE_PATHS_NAME_TO_ID.get(fc_path, 4)
                             # add the bone to a list and mark as animated bone
                             if boneCheckList[bone_id] == None:
                                 fc_list = [[] for i in range(5)]
@@ -522,7 +458,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                             if bone.parent:
                                 requiredBones.update(set(bone.parent_recursive))
                     else:
-                        array_id = pathMap.get(fc.data_path, 4)
+                        array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                         objFcurves[array_id].append(fc)
 
                 # look for all the required but non-animated bones and flag them to skip keying
@@ -533,80 +469,37 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                         boneCheckList[b_id] = [b, False, []]
             
                 # write obj animation data
-                # objFc_i = 0
                 obj_info = get_node_info(obj)
-                # kwargs_mod["bone_tForm_parentSpace"] = None
-                # kwargs_mod["rotMode"] = obj.rotation_mode
-                prep_node(obj, obj_info, objFcurves, inv_pathMap, global_matrix, False, **kwargs_mod)
-                # for fc_group in objFcurves:
-                #     kwargs_mod["ctx_fcurves"] = fc_group
-                #     for fc in fc_group:
-                #         write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
-                #         objFc_i += 1
+                prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
                 # write bone animation data
-                # fcBoneData structure: [Bone], [animated?], [list: ActionFCurves]
-                # new structure is now: [Bone], [animated?], [list(ActionFCurves):  [location], [rotation_euler], [rotation_quaternion], [scale], [other custom data]]
+                # fcBoneData structure: [Bone], [animated?], [list(ActionFCurves):  [location], [rotation_euler], [rotation_quaternion], [scale], [other custom data]]
                 for fcBoneData in boneCheckList:
                     if fcBoneData != None:
                         bone_info = get_node_info(fcBoneData[0])
                         if fcBoneData[1]:
                             pbone = obj.pose.bones[fcBoneData[0].name]
-                            # print(f"bone: {bone.name}, has animation: {fcBoneData[1]}, fcurves: {len(fcBoneData[2])}")
-
                             # Do matrix transformations only once per bone!
-                            # kwargs_mod["bone_tForm_parentSpace"] = bone_tForm_parentSpace = bone_calculate_parentSpace(fcBoneData[0])
                             bone_tForm_parentSpace = bone_calculate_parentSpace(fcBoneData[0])
-                            prep_node(pbone, bone_info, fcBoneData[2], inv_pathMap, bone_tForm_parentSpace, True, **kwargs_mod)
-                            # kwargs_mod["rotMode"] = pbone.rotation_mode
+                            prep_node(pbone, bone_info, fcBoneData[2], bone_tForm_parentSpace, True, **kwargs_mod)
 
-                            # boneFc_i = 0
-                            # for i, fc_group in enumerate(fcBoneData[2]):
-                            #     kwargs_mod["ctx_fcurves"] = fc_group
-
-                            #     # do offsets only for locations and rotations, skip other data
-                            #     if i<3:
-                            #         frames = set()
-                            #         for fc in fc_group:
-                            #             fri = [kp.co[0] for kp in fc.keyframe_points]
-                            #             frames.update(fri)
-                                        
-                            #         for fr in frames:
-                            #             keys_array = []
-                            #             for fc in fc_group:
-                            #                 fc_value = fc.evaluate(fr)
-                            #                 keys_array.append(fc_value)
-
-                            #             # Do calculations for bone curves
-                            #             offset_transforms(bone_tForm_parentSpace, fr, fc_group, inv_pathMap[i], keys_array, True, **kwargs_mod)                   
-
-                            #     for fc in fc_group:
-                            #         write_fcurve(fc, pbone, bone_info, boneFc_i, **kwargs_mod)
-                            #         boneFc_i += 1
                         else:
-                            # if bone has no animation data, write a basic anim line and return
+                            # if bone has no animation data, write a basic anim line
                             node_name_final, row, child = bone_info
                             fcurveString.write("anim {} {} {} {};\n".format(node_name_final, row, child, 0))
                                 
             else:
                 for fc in action.fcurves:
-                    array_id = pathMap.get(fc.data_path, 4)
+                    array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                     objFcurves[array_id].append(fc)
 
                 # write obj animation data
-                # objFc_i = 0
                 obj_info = get_node_info(obj)
-                # kwargs_mod["bone_tForm_parentSpace"] = None
-                # kwargs_mod["rotMode"] = obj.rotation_mode
-                prep_node(obj, obj_info, objFcurves, inv_pathMap, global_matrix, False, **kwargs_mod)
-                # kwargs_mod["ctx_fcurves"] = objFcurves
-                # for fc in objFcurves:
-                #     write_fcurve(fc, obj, obj_info, objFc_i, **kwargs_mod)
-                #     objFc_i += 1
+                prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
             # Restore original Armature transforms for non-destructive exporting
             convert_Axes(obj, global_matrix, global_scale, True)
-            bpy.data.actions.remove(action)
+            # bpy.data.actions.remove(action)
 
     fcurveString.seek(0)
     return fcurveString
