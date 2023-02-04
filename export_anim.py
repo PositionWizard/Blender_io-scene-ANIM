@@ -295,6 +295,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
 
 def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, global_scale, **kwargs):
     fcurveString = io.StringIO()
+    bake_axis = kwargs["bake_axis"]
     kwargs_mod = kwargs.copy()
     kwargs_mod["global_scale"] = global_scale
 
@@ -339,7 +340,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs).read())
 
     # Prepare object or bone to apply offset transforms for all channels of a data type (either location, rotation or scale), all at once
-    def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, action, **kwargs):
+    def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, action, bake_axis, **kwargs):
         kwargs_mod = kwargs.copy()
         kwargs_mod["rotMode"] = node.rotation_mode
 
@@ -356,7 +357,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             kwargs_mod["attr_name"] = attr
 
             # do offsets only for locations and rotations, skip other data
-            if i<3 and fc_group:
+            if i<3 and fc_group and bake_axis:
                 frames = set()
                 for fc in fc_group:
                     fri = [kp.co[0] for kp in fc.keyframe_points]
@@ -408,7 +409,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
             for fc in fc_group:
                 fc.update()
-                write_fcurve(fc, node, node_info, FCURVE_PATHS_ID_TO_NAME[i], fc_i, **kwargs_mod)
+                write_fcurve(fc, node, node_info, fc_path, fc_i, **kwargs_mod)
                 fc_i += 1
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
@@ -449,7 +450,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
             # Convert the armature to different axis upon export
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
-            convert_Axes(obj, global_matrix, global_scale)
+            if bake_axis:
+                convert_Axes(obj, global_matrix, global_scale)
             objFcurves = [[] for i in range(5)]
 
             if obj.type == 'ARMATURE':
@@ -459,7 +461,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
                 boneCheckList = [None]*len(obj.data.bones)
 
-                # get a list of bones that need to have "anim" line written down (also the ones that don't but only if any of their recursive children do)
+                # get a list of bones that need to have "anim" line written down and also the ones that don't (for proper line skipping in the file)
                 for fc in fcurves:
                     if 'pose.bones' in fc.data_path:
                         data_name = fc.data_path.split('"')[1]
@@ -522,7 +524,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
             # Restore original Armature transforms for non-destructive exporting
-            convert_Axes(obj, global_matrix, global_scale, True)
+            if bake_axis:
+                convert_Axes(obj, global_matrix, global_scale, True)
             bpy.data.actions.remove(action)
 
     fcurveString.seek(0)

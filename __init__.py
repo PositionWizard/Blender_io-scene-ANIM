@@ -76,6 +76,12 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
             default=False,
             )
 
+    bake_axis: BoolProperty(
+            name="",
+            description="Whether to perform axis conversion or export raw keyframes",
+            default=True,
+        )
+
     global_scale: FloatProperty(
             name="Bone Scale",
             description="Scale bone animation data\n\n"
@@ -152,7 +158,6 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
             min=0,
             update=upd_end
             )
-    
 
     def draw(self, context):
         layout = self.layout
@@ -223,6 +228,12 @@ class ANIM_PT_export_transform(bpy.types.Panel):
 
         return operator.bl_idname == "MAYA_ANIM_OT_export"
 
+    def draw_header(self, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        self.layout.prop(operator, "bake_axis", text="")
+
     def draw(self, context):
         layout = self.layout
         layout.use_property_split = True
@@ -231,6 +242,7 @@ class ANIM_PT_export_transform(bpy.types.Panel):
         sfile = context.space_data
         operator = sfile.active_operator
 
+        layout.enabled = operator.bake_axis
         layout.prop(operator, "global_scale")
         layout.prop(operator, "axis_forward")
         layout.prop(operator, "axis_up")
