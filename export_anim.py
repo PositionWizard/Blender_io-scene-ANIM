@@ -5,6 +5,7 @@ from mathutils import Matrix, Euler, Vector, Quaternion
 TODO
 - Convert Quaternions to Eulers when exporting
 - Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
+- When doing calculations, take into account custom range
 """
 
 UNITS = {
@@ -293,11 +294,11 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.seek(0)
     return animDataString
 
-def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, global_scale, **kwargs):
+def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, **kwargs):
     fcurveString = io.StringIO()
     bake_axis = kwargs["bake_axis"]
+    global_scale = kwargs["global_scale"]
     kwargs_mod = kwargs.copy()
-    kwargs_mod["global_scale"] = global_scale
 
     def get_node_info(node):
         # TODO FIGURE OUT WHY IT DOESN'T WORK IN MAYA
@@ -405,7 +406,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                 for j, fr in enumerate(frames):
                     # Do calculations for entire frames
-                    offset_transforms(node_tForm_Space, fr, fc_group, FCURVE_PATHS_ID_TO_NAME[i], keys_array_list[j], apply_boneScale, **kwargs_mod)
+                    offset_transforms(node_tForm_Space, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for fc in fc_group:
                 fc.update()
@@ -531,9 +532,12 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     fcurveString.seek(0)
     return fcurveString
 
-def anim_header_elements(scene, start_time, end_time, use_time_range, **kwargs):
+def anim_header_elements(scene, **kwargs):
     headerString = io.StringIO()
 
+    start_time = kwargs["start_time"]
+    end_time = kwargs["end_time"]
+    use_time_range = kwargs["use_time_range"]
     kwargs_mod = kwargs.copy()
 
     animVersion  = 1.1
@@ -550,16 +554,13 @@ def anim_header_elements(scene, start_time, end_time, use_time_range, **kwargs):
         start_time = scene.frame_start
         end_time = scene.frame_end
 
-    startTime = start_time
-    endTime = end_time
-
     headerString.write('animVersion {:n};\n'.format(animVersion))
     headerString.write('mayaVersion {}; # this is actually Blender version\n'.format(blenderVersion))
     headerString.write('timeUnit {};\n'.format(timeUnit))
     headerString.write('linearUnit {};\n'.format(linearUnit))
     headerString.write('angularUnit {};\n'.format(angularUnit))
-    headerString.write('startTime {:n};\n'.format(startTime))
-    headerString.write('endTime {:n};\n'.format(endTime))
+    headerString.write('startTime {:n};\n'.format(start_time))
+    headerString.write('endTime {:n};\n'.format(end_time))
 
     headerString.seek(0)
     return headerString, kwargs_mod
