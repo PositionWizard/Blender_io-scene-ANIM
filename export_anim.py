@@ -2,17 +2,9 @@ import bpy, io, math, time
 from mathutils import Matrix, Euler, Vector, Quaternion
 
 """
-Things needed for generating the anim file:
-- List of all the bones that have animation data and the ones that don't but only if any of their recursive children, do.
-- Have to transform all animated values on a frame at once, even if most of them are missing (for example X can become Z).
-    This means that I can't loop through fcurves when manipulating values because for each found curve I need to find every other curve and update it too.
-    Instead, I should loop through frames that have keys on the bones. First get a bone, then once any keyframe is found on the timeline,
-    transform the values from detected fcurves to new ones for a new axis space. This method can bloat the animation with redundant keys,
-    so to combat this, some reduction and optimization needs to be done.
-
 TODO
 - Convert Quaternions to Eulers when exporting
-- Create FCurves when needed (space conversion)
+- Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
 """
 
 UNITS = {
@@ -162,8 +154,8 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
 
     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
-    for i, fc in enumerate(fc_group):
-        t_value = transform_map[attr_name][i]
+    for fc in fc_group:
+        t_value = transform_map[attr_name][fc.array_index]
         kp_found = False
         for k in fc.keyframe_points:
             if k.co[0] == frame:
@@ -347,15 +339,16 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs).read())
 
     # Prepare object or bone to apply offset transforms for all channels of a data type (either location, rotation or scale), all at once
-    def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, **kwargs):
+    def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, action, **kwargs):
         kwargs_mod = kwargs.copy()
         kwargs_mod["rotMode"] = node.rotation_mode
 
         fc_i = 0
         for i, fc_group in enumerate(fcGroups):
             # translate attribute names
-            try: attr = ANIM_ATTR_NAMES[FCURVE_PATHS_ID_TO_NAME[i]]
-            except KeyError: attr = FCURVE_PATHS_ID_TO_NAME[i]
+            fc_path = FCURVE_PATHS_ID_TO_NAME[i]
+            try: attr = ANIM_ATTR_NAMES[fc_path]
+            except KeyError: attr = fc_path
 
             # sort the fcurves according to array_index
             fc_group = sorted(fc_group, key=lambda fc: fc.array_index)
@@ -363,20 +356,52 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             kwargs_mod["attr_name"] = attr
 
             # do offsets only for locations and rotations, skip other data
-            if i<3:
+            if i<3 and fc_group:
                 frames = set()
                 for fc in fc_group:
                     fri = [kp.co[0] for kp in fc.keyframe_points]
                     frames.update(fri)
+
+                # create fcurves for entire array of a single property if one fcurve was keyed but others are straight up missing
+                # this is needed to properly evaluate fcurves and convert the axes
+                if not ((len(fc_group) == 3 and i != 2) or (len(fc_group) == 4)):
+                    # only for quaternion
+                    if i == 2:
+                        fc_identity = [1,0,0,0]     # base for quaternion
+                        fc_group_new = [None]*4
+                    else:
+                        fc_identity = [0,0,0]       # base for euler/location
+                        fc_group_new = [None]*3
+
+                    # get a list of fcurve indices for a given property
+                    fc_ids = [fc.array_index for fc in fc_group]
                     
+                    # create missing curves for the property and insert basic keyframes
+                    for j, val in enumerate(fc_identity):
+                        if j not in fc_ids:
+                            fc = action.fcurves.new(data_path=fc_group[0].data_path, index=j)
+                            fc.keyframe_points.insert(frame=list(frames)[0], value=val)
+                            fc_group_new[j] = fc
+                            
+                        try:
+                            pos_id = fc_group[j].array_index
+                            fc_group_new[pos_id] = fc_group[j]
+                        except IndexError: continue
+                    fc_group = fc_group_new
+
                 # offset transforms for keys on all fcurves at once for each frame
                 keys_array_list = [[] for f in frames]
                 for j, fr in enumerate(frames):
                     # get all keyframe values for this data path
+                    # keys_array_list.append(list(fc_identity))
+
                     for fc in fc_group:
                         fc_value = fc.evaluate(fr)
                         keys_array_list[j].append(fc_value)
-
+                        # keys_array_list[j][fc.array_index] = fc_value
+                
+                # have to loop through all the frames again to do the offset calculations, unfortunately...
+                # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                 for j, fr in enumerate(frames):
                     # Do calculations for entire frames
                     offset_transforms(node_tForm_Space, fr, fc_group, FCURVE_PATHS_ID_TO_NAME[i], keys_array_list[j], apply_boneScale, **kwargs_mod)
@@ -420,6 +445,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             # Create an internal copy of the action to avoid destructive workflow
             # TODO refactor this whole system to avoid making a copy altogether
             action = obj.animation_data.action.copy()
+            kwargs_mod["action"] = action
 
             # Convert the armature to different axis upon export
             # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
@@ -432,10 +458,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
 
                 boneCheckList = [None]*len(obj.data.bones)
-                requiredBones = set()
 
                 # get a list of bones that need to have "anim" line written down (also the ones that don't but only if any of their recursive children do)
-                # TODO include an entire hierarchy (limit by index, not recursive children)
                 for fc in fcurves:
                     if 'pose.bones' in fc.data_path:
                         data_name = fc.data_path.split('"')[1]
@@ -453,21 +477,21 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                             else:
                                 # update the entry with any fcurves left
                                 boneCheckList[bone_id][2][array_id].append(fc)
-
-                            # make a set of all the parents of the animated bone
-                            if bone.parent:
-                                requiredBones.update(set(bone.parent_recursive))
                     else:
                         array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                         objFcurves[array_id].append(fc)
 
                 # look for all the required but non-animated bones and flag them to skip keying
-                for b in requiredBones:
-                    b = bpy.types.Bone(b)
-                    b_id = obj.data.bones.find(b.name)
-                    if not boneCheckList[b_id]:
-                        boneCheckList[b_id] = [b, False, []]
-            
+                lastValid_i = 0
+                for i, b in enumerate(obj.data.bones):
+                    if not boneCheckList[i]:
+                        boneCheckList[i] = [b, False, []]
+                    else:
+                        lastValid_i = i
+
+                # cull all the non-animated after last animated one
+                boneCheckList = boneCheckList[:lastValid_i+1]
+
                 # write obj animation data
                 obj_info = get_node_info(obj)
                 prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
@@ -499,7 +523,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
 
             # Restore original Armature transforms for non-destructive exporting
             convert_Axes(obj, global_matrix, global_scale, True)
-            # bpy.data.actions.remove(action)
+            bpy.data.actions.remove(action)
 
     fcurveString.seek(0)
     return fcurveString
