@@ -20,6 +20,8 @@ bl_info = {
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "This addon is still in development.",
+    "doc_url": "https://github.com/PositionWizard/Blender_io-scene-ANIM",
+    "tracker_url": "https://github.com/PositionWizard/Blender_io-scene-ANIM/issues"
 }
 
 if "bpy" in locals():
