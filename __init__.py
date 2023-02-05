@@ -16,7 +16,7 @@ bl_info = {
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
     "blender" : (3, 3, 0),
-    "version" : (1, 2, 1),
+    "version" : (1, 2, 2),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "This addon is still in development.",
@@ -133,6 +133,12 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
             name="Use Time Range",
             description="If disabled, the start and end frame will be taken from the timeline",
             default=False
+            )
+
+    only_deform_bones: BoolProperty(
+            name="Only Deform Bones",
+            description="Export cruves only for bones tagged with Deform flag",
+            default=True
             )
 
     def upd_end(self, context):
@@ -282,6 +288,11 @@ class ANIM_PT_export_animation(bpy.types.Panel):
         splitrow.prop(operator, 'start_time')
         splitrow.prop(operator, 'end_time')
         row.enabled = operator.use_time_range
+
+        col.use_property_split = True
+
+        row = col.row()
+        row.prop(operator, 'only_deform_bones')
 
 def menu_func_export(self, context):
     self.layout.operator(ExportANIM.bl_idname, text="Maya Animation (.anim)")

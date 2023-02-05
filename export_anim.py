@@ -4,8 +4,6 @@ from mathutils import Matrix, Euler, Vector, Quaternion
 """
 TODO
 - Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
-- When doing calculations, take into account custom range
-- Option to export only deform bones
 """
 
 UNITS = {
@@ -177,7 +175,7 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
         if not kp_found:
             fc.keyframe_points.insert(frame=frame, value=t_value)
 
-def anim_keys_elements(fc, dt_output, **kwargs):
+def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kwargs):
     keyString = io.StringIO()
     tab = "  "
 
@@ -214,6 +212,11 @@ def anim_keys_elements(fc, dt_output, **kwargs):
     # get keyframe's frame and values
     for kp in fc.keyframe_points:
         kp = bpy.types.Keyframe(kp)
+
+        if use_time_range:
+            if not (kp.co[0] >= start_time and kp.co[0] <= end_time):
+                continue
+
         keyString.write(tab*2+"{} ".format(round(kp.co[0], 6))) # write frame number
         kp_value = kp.co[1] # get key's value
 
@@ -302,6 +305,10 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     fcurveString = io.StringIO()
     bake_axis = kwargs["bake_axis"]
     global_scale = kwargs["global_scale"]
+    only_deform_bones = kwargs["only_deform_bones"]
+    use_time_range = kwargs["use_time_range"]
+    start_time = kwargs["start_time"]
+    end_time = kwargs["end_time"]
     kwargs_mod = kwargs.copy()
 
     def get_node_info(node):
@@ -346,8 +353,21 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         # write the animData block
         fcurveString.write(anim_animData_elements(fc, node, fc_path, **kwargs).read())
 
+    def get_frames(fcurves, use_time_range, start_time, end_time, frames=set()):
+        for fc in fcurves:
+            if use_time_range:
+                fri = [kp.co[0] for kp in fc.keyframe_points if kp.co[0] >= start_time and kp.co[0] <= end_time]
+            else:
+                fri = [kp.co[0] for kp in fc.keyframe_points]
+            frames.update(fri)
+
+        return frames
+
     # Prepare object or bone to apply offset transforms for all channels of a data type (either location, rotation or scale), all at once
     def prep_node(node, node_info, fcGroups, node_tForm_Space, apply_boneScale, action, bake_axis, **kwargs):
+        use_time_range = kwargs["use_time_range"]
+        start_time = kwargs["start_time"]
+        end_time = kwargs["end_time"]
         kwargs_mod = kwargs.copy()
         kwargs_mod["rotMode"] = node.rotation_mode
 
@@ -364,52 +384,54 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             kwargs_mod["attr_name"] = attr
 
             # do offsets only for locations and rotations, skip other data
-            if i<3 and fc_group and bake_axis:
+            if fc_group:
                 frames = set()
-                for fc in fc_group:
-                    fri = [kp.co[0] for kp in fc.keyframe_points]
-                    frames.update(fri)
+                frames = get_frames(fc_group, use_time_range, start_time, end_time, frames)
 
-                # create fcurves for entire array of a single property if one fcurve was keyed but others are straight up missing
-                # this is needed to properly evaluate fcurves and convert the axes
-                if not ((len(fc_group) == 3 and i != 2) or (len(fc_group) == 4)):
-                    # only for quaternion
-                    if i == 2:
-                        fc_identity = [1,0,0,0]     # base for quaternion
-                        fc_group_new = [None]*4
-                    else:
-                        fc_identity = [0,0,0]       # base for euler/location
-                        fc_group_new = [None]*3
+                if not frames:
+                    continue
 
-                    # get a list of fcurve indices for a given property
-                    fc_ids = [fc.array_index for fc in fc_group]
+                if i<3 and bake_axis:
+                    # create fcurves for entire array of a single property if one fcurve was keyed but others are straight up missing
+                    # this is needed to properly evaluate fcurves and convert the axes
+                    if not ((len(fc_group) == 3 and i != 2) or (len(fc_group) == 4)):
+                        # only for quaternion
+                        if i == 2:
+                            fc_identity = [1,0,0,0]     # base for quaternion
+                            fc_group_new = [None]*4
+                        else:
+                            fc_identity = [0,0,0]       # base for euler/location
+                            fc_group_new = [None]*3
+
+                        # get a list of fcurve indices for a given property
+                        fc_ids = [fc.array_index for fc in fc_group]
+                        
+                        # create missing curves for the property and insert basic keyframes
+                        for j, val in enumerate(fc_identity):
+                            if j not in fc_ids:
+                                fc = action.fcurves.new(data_path=fc_group[0].data_path, index=j)
+                                fc.keyframe_points.insert(frame=list(frames)[0], value=val)
+                                fc_group_new[j] = fc
+                                
+                            try:
+                                pos_id = fc_group[j].array_index
+                                fc_group_new[pos_id] = fc_group[j]
+                            except IndexError: continue
+                        fc_group = fc_group_new
+
+                    # offset transforms for keys on all fcurves at once for each frame
+                    keys_array_list = [[] for f in frames]
+                    for j, fr in enumerate(frames):
+                        # get all keyframe values for this data path
+                        for fc in fc_group:
+                            fc_value = fc.evaluate(fr)
+                            keys_array_list[j].append(fc_value)
                     
-                    # create missing curves for the property and insert basic keyframes
-                    for j, val in enumerate(fc_identity):
-                        if j not in fc_ids:
-                            fc = action.fcurves.new(data_path=fc_group[0].data_path, index=j)
-                            fc.keyframe_points.insert(frame=list(frames)[0], value=val)
-                            fc_group_new[j] = fc
-                            
-                        try:
-                            pos_id = fc_group[j].array_index
-                            fc_group_new[pos_id] = fc_group[j]
-                        except IndexError: continue
-                    fc_group = fc_group_new
-
-                # offset transforms for keys on all fcurves at once for each frame
-                keys_array_list = [[] for f in frames]
-                for j, fr in enumerate(frames):
-                    # get all keyframe values for this data path
-                    for fc in fc_group:
-                        fc_value = fc.evaluate(fr)
-                        keys_array_list[j].append(fc_value)
-                
-                # have to loop through all the frames again to do the offset calculations, unfortunately...
-                # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
-                for j, fr in enumerate(frames):
-                    # Do calculations for entire frames
-                    offset_transforms(node_tForm_Space, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
+                    # have to loop through all the frames again to do the offset calculations, unfortunately...
+                    # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
+                    for j, fr in enumerate(frames):
+                        # Do calculations for entire frames
+                        offset_transforms(node_tForm_Space, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for j, fc in enumerate(fc_group):
                 if fc.data_path.endswith('quaternion') and j == 3:
@@ -466,6 +488,11 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
 
+                if only_deform_bones:
+                    eval_bones = [b.name for b in obj.data.bones if b.use_deform]
+                else:
+                    eval_bones = obj.data.bones
+                    
                 boneCheckList = [None]*len(obj.data.bones)
 
                 # get a list of bones that need to have "anim" line written down and also the ones that don't (for proper line skipping in the file)
@@ -473,7 +500,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     if 'pose.bones' in fc.data_path:
                         data_name = fc.data_path.split('"')[1]
                         fc_path = fc.data_path.split('.')[-1] # get only the last part
-                        if data_name in obj.data.bones:
+                        if data_name in eval_bones:
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
@@ -510,7 +537,13 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 for fcBoneData in boneCheckList:
                     if fcBoneData != None:
                         bone_info = get_node_info(fcBoneData[0])
-                        if fcBoneData[1]:
+
+                        # get frames for keys in a given time range, to check if curves should be written or not
+                        bone_frames = set()
+                        for fc_group in fcBoneData[2]:
+                            bone_frames = get_frames(fc_group, use_time_range, start_time, end_time, bone_frames)
+
+                        if fcBoneData[1] and bone_frames:
                             pbone = obj.pose.bones[fcBoneData[0].name]
                             # Do matrix transformations only once per bone!
                             bone_tForm_parentSpace = bone_calculate_parentSpace(fcBoneData[0])
