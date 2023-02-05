@@ -54,9 +54,7 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
     bl_description = "Export animation curves using Autodesk Maya file format"
     bl_options = {'UNDO', 'PRESET'}
 
-    # filename: StringProperty(default="untitled.anim")
     filename_ext = ".anim"
-    # filepath: StringProperty(subtype="FILE_PATH")
     filter_glob: StringProperty(
         default = "*.anim",
         options = {'HIDDEN'}
@@ -269,17 +267,6 @@ class ANIM_PT_export_animation(bpy.types.Panel):
 
         sfile = context.space_data
         operator = sfile.active_operator
-
-        # sublayout = layout.column()
-        # sublayout.prop(operator, 'use_time_range')
-
-        # sublayout.use_property_split = False
-        
-        # sublayout = sublayout.split(factor = 0.5)
-        # splitLayout = sublayout.split(factor = 0.5, align=True)
-        # splitLayout.prop(operator, 'start_time')
-        # splitLayout.prop(operator, 'end_time')
-        # splitLayout.enabled = operator.use_time_range
 
         flow = layout.grid_flow()
         col = flow.column()
