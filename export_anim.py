@@ -302,6 +302,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
     fcurveString = io.StringIO()
     bake_axis = kwargs["bake_axis"]
     global_scale = kwargs["global_scale"]
+    only_deform_bones = kwargs["only_deform_bones"]
     kwargs_mod = kwargs.copy()
 
     def get_node_info(node):
@@ -466,6 +467,11 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
 
+                if only_deform_bones:
+                    eval_bones = [b.name for b in obj.data.bones if b.use_deform]
+                else:
+                    eval_bones = obj.data.bones
+                    
                 boneCheckList = [None]*len(obj.data.bones)
 
                 # get a list of bones that need to have "anim" line written down and also the ones that don't (for proper line skipping in the file)
@@ -473,7 +479,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     if 'pose.bones' in fc.data_path:
                         data_name = fc.data_path.split('"')[1]
                         fc_path = fc.data_path.split('.')[-1] # get only the last part
-                        if data_name in obj.data.bones:
+                        if data_name in eval_bones:
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
