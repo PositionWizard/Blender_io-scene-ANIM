@@ -140,8 +140,8 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
 
         key_values_Space[1] = node_rot @ key_rotValues
 
-        # TODO figure out if there's a way to get rotations without gimbal lock
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
+        # TODO figure out if there's a way to get rotations without gimbal lock
         # TODO add option to retain original bone rotation
         key_values_Space[1] = key_values_Space[1].to_euler('XYZ')
 
@@ -395,12 +395,9 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 keys_array_list = [[] for f in frames]
                 for j, fr in enumerate(frames):
                     # get all keyframe values for this data path
-                    # keys_array_list.append(list(fc_identity))
-
                     for fc in fc_group:
                         fc_value = fc.evaluate(fr)
                         keys_array_list[j].append(fc_value)
-                        # keys_array_list[j][fc.array_index] = fc_value
                 
                 # have to loop through all the frames again to do the offset calculations, unfortunately...
                 # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
