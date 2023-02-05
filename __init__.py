@@ -16,7 +16,7 @@ bl_info = {
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
     "blender" : (3, 3, 0),
-    "version" : (1, 2, 0),
+    "version" : (1, 2, 1),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "This addon is still in development.",

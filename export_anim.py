@@ -3,9 +3,9 @@ from mathutils import Matrix, Euler, Vector, Quaternion
 
 """
 TODO
-- Convert Quaternions to Eulers when exporting
 - Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
 - When doing calculations, take into account custom range
+- Option to export only deform bones
 """
 
 UNITS = {
@@ -130,20 +130,21 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
     # Transform rotation and translation curves to a new space
     if attr_name == 'rotate':
         # get a rotation matrix of the animated values
+        key_Euler = Euler()
         if fc_path.endswith('quaternion'):
             key_rotValues = Quaternion(keys_array)
         else:
             # a safecheck if there are both euler and quaternion curves but quaternion is currently used
             if rotMode == 'QUATERNION':
                 rotMode = 'XYZ'
-            key_rotValues = Euler(keys_array, rotMode).to_quaternion()
+            key_Euler = Euler(keys_array, rotMode)
+            key_rotValues = key_Euler.to_quaternion()
 
         key_values_Space[1] = node_rot @ key_rotValues
 
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
-        # TODO figure out if there's a way to get rotations without gimbal lock
         # TODO add option to retain original bone rotation
-        key_values_Space[1] = key_values_Space[1].to_euler('XYZ')
+        key_values_Space[1] = key_values_Space[1].to_euler('XYZ', key_Euler)
 
         transform_map[attr_name] = key_values_Space[1]
     elif attr_name == 'translate':
@@ -155,8 +156,10 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
         transform_map[attr_name] = key_values_Space[0] = newMat.translation
 
     # loop through those few curves' keyframes and find all keys on the same frame as the initial one
-    for fc in fc_group:
-        t_value = transform_map[attr_name][fc.array_index]
+    for i, fc in enumerate(fc_group):
+        if fc_path.endswith('quaternion') and i == 3:
+            continue
+        t_value = transform_map[attr_name][i]
         kp_found = False
         for k in fc.keyframe_points:
             if k.co[0] == frame:
@@ -259,7 +262,10 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.write('animData {\n') # open the data block
     tab = "  "
 
-    fc_unit_type = node.bl_rna.properties[fc_path].unit # get the curve unit (degrees, radians, linear, etc.)
+    if fc_path.endswith('quaternion'):
+        fc_unit_type = 'ROTATION'       # have to change it because we're converting quaternions to eulers and quaternion is unitless even though it's in radians
+    else:
+        fc_unit_type = node.bl_rna.properties[fc_path].unit # get the curve unit (degrees, radians, linear, etc.)
 
     dt_input = 'time'
     dt_output = ANIM_UNIT_TYPE[fc_unit_type]
@@ -267,15 +273,13 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     dt_tan = angularUnit
     dt_preInf = dt_postInf = fc.extrapolation.lower() # set either linear or constant
     
-
     # check for any cyclic modifiers and apply a different pre and post infinity type
     for mod in fc.modifiers:
         if mod.type == 'CYCLES':
             if mod.mode_before != 'NONE': dt_preInf = ANIM_CYCLES_TYPE[mod.mode_before]
             if mod.mode_after != 'NONE': dt_postInf = ANIM_CYCLES_TYPE[mod.mode_after]
             break
-
-    
+ 
     animDataString.write(tab+'input {};\n'.format(dt_input))
     animDataString.write(tab+'output {};\n'.format(dt_output))
     animDataString.write(tab+'weighted {};\n'.format(dt_weighted))
@@ -326,10 +330,12 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         fc = bpy.types.FCurve(fc)
         fcurveString.write('anim ')
                 
-        if fc_path.endswith("quaternion"):
-            axis_ASCII = 87
-        else:
-            axis_ASCII = 88
+        # if fc_path.endswith("quaternion"):
+        #     axis_ASCII = 87
+        # else:
+        #     axis_ASCII = 88
+
+        axis_ASCII = 88
         
         fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
         node_name_final, row, child = node_info
@@ -405,10 +411,13 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                     # Do calculations for entire frames
                     offset_transforms(node_tForm_Space, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
-            for fc in fc_group:
-                fc.update()
-                write_fcurve(fc, node, node_info, fc_path, fc_i, **kwargs_mod)
-                fc_i += 1
+            for j, fc in enumerate(fc_group):
+                if fc.data_path.endswith('quaternion') and j == 3:
+                    continue
+                else:
+                    fc.update()
+                    write_fcurve(fc, node, node_info, fc_path, fc_i, **kwargs_mod)
+                    fc_i += 1
 
     # Return a correct bone hierarchy index if bone matches fcurve's data path
     def get_boneHierarchy_index(fc, obj):
