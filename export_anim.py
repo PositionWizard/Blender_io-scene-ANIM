@@ -114,8 +114,21 @@ def bone_calculate_parentSpace(bone):
      
     return boneMat
 
+def offset_rotation(keys_array, fc_path, node_rot):
+    # get a rotation matrix of the animated values
+    # TODO add option to retain original bone rotation  
+    if fc_path.endswith('quaternion'):
+        key_rotValues = Quaternion(keys_array)
+    else:
+        key_Euler = Euler(keys_array, 'XYZ')
+        key_rotValues = key_Euler.to_quaternion()
+
+    rotMat = node_rot @ key_rotValues
+
+    return rotMat
+
 # Offset transforms for multiple channels at once per transform type
-def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, apply_scaling, attr_name, global_scale, rotMode, **kwargs):
+def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_array, apply_scaling, attr_name, global_scale, **kwargs):
     key_values_Space = [None]*3
     node_loc, node_rot, node_scale = node_tForm_Space.decompose()
 
@@ -127,22 +140,12 @@ def offset_transforms(node_tForm_Space, frame, fc_group, fc_path, keys_array, ap
 
     # Transform rotation and translation curves to a new space
     if attr_name == 'rotate':
-        # get a rotation matrix of the animated values
-        key_Euler = Euler()
-        if fc_path.endswith('quaternion'):
-            key_rotValues = Quaternion(keys_array)
-        else:
-            # a safecheck if there are both euler and quaternion curves but quaternion is currently used
-            if rotMode == 'QUATERNION':
-                rotMode = 'XYZ'
-            key_Euler = Euler(keys_array, rotMode)
-            key_rotValues = key_Euler.to_quaternion()
+        rotMat = offset_rotation(keys_array, fc_path, node_rot)
 
-        key_values_Space[1] = node_rot @ key_rotValues
-
+        # TODO add option to retain original bone rotation        
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
-        # TODO add option to retain original bone rotation
-        key_values_Space[1] = key_values_Space[1].to_euler('XYZ', key_Euler)
+        # filter euler values (anti-gimbal lock) by a compatibile euler from the already converted first rotation keyframes, NOT current keyframes pre-conversion
+        key_values_Space[1] = rotMat.to_euler('XYZ', eulRef)
 
         transform_map[attr_name] = key_values_Space[1]
     elif attr_name == 'translate':
@@ -427,11 +430,15 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                             fc_value = fc.evaluate(fr)
                             keys_array_list[j].append(fc_value)
                     
+                    # get rotation values as reference to properly filter next euler values
+                    rotRef_mat = offset_rotation(keys_array_list[0], fc_path, node_tForm_Space.decompose()[1])
+                    eulRef = rotRef_mat.to_euler('XYZ')
+
                     # have to loop through all the frames again to do the offset calculations, unfortunately...
                     # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                     for j, fr in enumerate(frames):
                         # Do calculations for entire frames
-                        offset_transforms(node_tForm_Space, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
+                        offset_transforms(node_tForm_Space, eulRef, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for j, fc in enumerate(fc_group):
                 if fc.data_path.endswith('quaternion') and j == 3:
