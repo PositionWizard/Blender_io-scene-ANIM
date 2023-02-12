@@ -13,7 +13,7 @@ Currently only supports exporting. Works for objects and armature bones.
 Animated rotations are always converted to Eulers with 'XYZ' order. This also means Quaternion rotation curves are prone to gimbal lock due to conversion.
 Gimbal lock may also occur in other software if animation was exported with different axes.
 
-Features:
+## Features:
 - Export raw animation curves as presented by Blender ("Transform" OFF)
 - Animation axis conversion to differently oriented world directions and bone transformation to a parent-space instead of Blender's rest-space ("Transform" ON)
 - Control the bone scale for exported animations, in case target software top hierarchy node is in different scale
