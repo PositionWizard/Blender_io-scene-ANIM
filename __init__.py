@@ -15,8 +15,8 @@ bl_info = {
     "name" : "Maya ANIM format",
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
-    "blender" : (3, 3, 0),
-    "version" : (1, 2, 3),
+    "blender" : (3, 6, 1),
+    "version" : (1, 2, 4),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "This addon is still in development.",
@@ -117,17 +117,21 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
 
     sanitize_names: EnumProperty(
             name="Sanitize Names",
-            items=(('EXPORT_SPACES', "Export only (spaces)", "Sanitize only spaces"),
-                   ('EXPORT_ALL', "Export only", "Sanitize names only in the exported file"),
-                   ('PROJECT_EXPORT_SPACES', "Project and Export (spaces)", "Sanitize only spaces both in current project and exported file"),
-                   ('PROJECT_EXPORT_ALL', "Project and Export", "Sanitize names both in current project and exported file"),
+            items=(('EXPORT_ONLY', "Export only", "Sanitize names only in the exported file"),
+                   ('EXPORT_AND_PROJECT', "Project and Export", "Sanitize names both in current project and exported file"),
                    ),
             description="Should object and bone names be sanitized.\n"
                         "Removes special characters and replaces them with '_'.\n\n"
-                        "This has to be done at least for spaces to ensure continuity of strings.\n"
-                        "For Autodesk Maya don't use '(spaces)' options",
-            default='EXPORT_ALL',
+                        "This has to be done at least for spaces to ensure continuity of strings",
+            default='EXPORT_ONLY',
             )
+    
+    sanitize_spacesOnly: BoolProperty(
+            name="Spaces",
+            description="Sanitize only spaces\n\n"
+                        "For Autodesk Maya this should be disabled",
+            default=False
+        )
 
     use_time_range: BoolProperty(
             name="Use Time Range",
@@ -175,6 +179,8 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
 
         sublayout = layout.column()
         sublayout.prop(operator, "sanitize_names")
+        sublayout = layout.column(heading="Sanitize only")
+        sublayout.prop(operator, "sanitize_spacesOnly")
 
     def execute(self, context):
         from . import export_anim

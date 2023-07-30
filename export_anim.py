@@ -95,7 +95,18 @@ def units_convertor(u_from, u_to):
     return lambda v: v * conv
 
 linear_converter = units_convertor('METERS', bpy.context.scene.unit_settings.length_unit) 
-angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation) 
+angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation)
+
+def dupe_obj(obj):
+    obj = obj.copy()
+    arm = obj.data.copy()
+    obj.data = arm
+
+    bpy.context.scene.collection.objects.link(obj)
+    obj.make_local()
+    obj.data.make_local()
+
+    return obj
 
 # Sanitization replaces all special characters with underscores
 def names_sanitize(name, wildcard=""):
@@ -304,7 +315,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     animDataString.seek(0)
     return animDataString
 
-def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bake_space_transform, **kwargs):
+def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnly, global_matrix, bake_space_transform, **kwargs):
     fcurveString = io.StringIO()
     bake_axis = kwargs["bake_axis"]
     global_scale = kwargs["global_scale"]
@@ -324,10 +335,10 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
         # Write data for anim line: obj/bone name, children count, fcurve number
         wildcard = ""
         # Clean the name of exported objects/bones
-        if sanitize_names == 'EXPORT_SPACES' or sanitize_names == 'PROJECT_EXPORT_SPACES': # apply wildcard for spaces
+        if sanitize_spacesOnly: # apply wildcard for spaces
             wildcard = " "
         # Now sanitize either for project and export or just project, wildcard will be still applied depending on choice
-        if sanitize_names == 'EXPORT_ALL' or sanitize_names == 'EXPORT_SPACES':
+        if sanitize_names == 'EXPORT_ONLY':
             node_name_final = names_sanitize(node.name, wildcard)
         else:
             node_name_final = node.name = names_sanitize(node.name, wildcard)
@@ -484,10 +495,13 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
             action = obj.animation_data.action.copy()
             kwargs_mod["action"] = action
 
-            # Convert the armature to different axis upon export
-            # TODO refactor this maybe to directly affect bones instead of transforming everything twice?
+            # Clone and convert the armature to different axis upon export
             if bake_axis:
+                obj_og = obj
+                obj = dupe_obj(obj)
+                context.view_layer.objects.active = obj
                 convert_Axes(obj, global_matrix, global_scale)
+                
             objFcurves = [[] for i in range(5)]
 
             if obj.type == 'ARMATURE':
@@ -570,9 +584,13 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, global_matrix, bak
                 obj_info = get_node_info(obj)
                 prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
-            # Restore original Armature transforms for non-destructive exporting
             if bake_axis:
-                convert_Axes(obj, global_matrix, global_scale, True)
+                bpy.data.armatures.remove(obj.data)
+                context.view_layer.objects.active = obj = obj_og
+
+                # (OBSOLETE) Restore original Armature transforms for non-destructive exporting
+                # convert_Axes(obj, global_matrix, global_scale, True)
+
             bpy.data.actions.remove(action)
 
     fcurveString.seek(0)
