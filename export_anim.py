@@ -1,101 +1,17 @@
+if "bpy" in locals():
+    import importlib
+    if "anim_utils" in locals():
+        importlib.reload(anim_utils)
+
 import bpy, io, math, time
 from mathutils import Matrix, Euler, Vector, Quaternion
+
+from . import anim_utils
 
 """
 TODO
 - Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
 """
-
-UNITS = {
-    "METERS": 1.0,  # Ref unit!
-    "KILOMETERS": 0.001,
-    'MILLIMETERS': 1000.0,
-    'CENTIMETERS': 100.0,
-    "FEET": 1.0 / 0.3048,
-    "INCHES": 1.0 / 0.0254,
-    "turn": 1.0,  # Ref unit!
-    "DEGREES": 360.0,
-    "RADIANS": math.pi * 2.0,
-    "SECONDS": 1.0,  # Ref unit!
-}
-
-ANIM_TIME_UNITS = {
-    # in fps
-    15: "game",
-    24: "film",
-    25: "pal",
-    30: "ntsc",
-    48: "show",
-    50: "palf",
-    60: "ntscf"
-}
-
-ANIM_LINEAR_UNITS = {
-    'MILLIMETERS': "mm",
-    'CENTIMETERS': "cm",
-    'METERS': "m",
-    'KILOMETERS': "km",
-    'INCHES': "in",
-    'FEET': "ft",
-    'MILES': "mi",
-}
-
-ANIM_ANGULAR_UNITS = {
-    'DEGREES': "deg",
-    'RADIANS': "rad"
-}
-
-ANIM_CYCLES_TYPE = {
-    'REPEAT': 'cycle',
-    'REPEAT_OFFSET': 'cycleRelative',
-    'MIRROR': 'oscillate',
-    'NONE': None,
-}
-
-ANIM_UNIT_TYPE = { # blender defaults:
-    'TIME': 'time', # frame
-    'LENGTH': 'linear', # meter
-    'ROTATION': 'angular', # radians
-    'NONE': 'unitless'
-}
-
-ANIM_TANGENT_TYPE = {
-    'AUTO_CLAMPED': 'auto',
-    'AUTO': 'spline',
-    'VECTOR': 'linear',
-    'ALIGNED': 'fixed',
-    'FREE': 'fixed',
-
-    # interpolation
-    'BEZIER': 'spline',
-    'LINEAR': 'linear', # doesn't write tangents
-    'CONSTANT': 'step' # doesn't write tangents, only out tangent
-}
-
-ANIM_ATTR_NAMES = {
-    "location": 'translate',
-    "rotation_euler": 'rotate',
-    "rotation_quaternion": 'rotate',
-    "scale": 'scale'
-}
-
-FCURVE_PATHS_NAME_TO_ID = {
-    "location": 0,
-    "rotation_euler": 1,
-    "rotation_quaternion": 2,
-    "scale": 3,
-    "custom": 4
-}
-
-FCURVE_PATHS_ID_TO_NAME = {v: k for k, v in FCURVE_PATHS_NAME_TO_ID.items()}
-
-# Return a convertor between specified units.
-def units_convertor(u_from, u_to):
-    conv = UNITS[u_to] / UNITS[u_from]
-    return lambda v: v * conv
-
-linear_converter = units_convertor('METERS', bpy.context.scene.unit_settings.length_unit) 
-angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation)
 
 def dupe_obj(obj):
     obj = obj.copy()
@@ -207,7 +123,7 @@ def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kw
         # do the math and avoid dividing by 0
         if x != 0:
             tan = (y)/(x) # get the tangent, also as a slope between keyframe point and left handle
-            tan_angle = angular_converter(math.atan(tan)) # convert back to angular through "atan" and to degrees
+            tan_angle = anim_utils.angular_converter(math.atan(tan)) # convert back to angular through "atan" and to degrees
             
             if tan_angle < 0.001 and tan_angle > -0.001: # round the number
                 tan_angle = 0
@@ -235,22 +151,22 @@ def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kw
         kp_value = kp.co[1] # get key's value
 
         if dt_output == 'linear':
-            kp_value = linear_converter(kp.co[1])
+            kp_value = anim_utils.linear_converter(kp.co[1])
 
         elif dt_output == 'angular':
-            kp_value = angular_converter(kp.co[1])
+            kp_value = anim_utils.angular_converter(kp.co[1])
 
         keyString.write(f"{kp_value:.6f} ") # write value
 
         if kp.interpolation != 'BEZIER':
-            out_tan = ANIM_TANGENT_TYPE[kp.interpolation]
+            out_tan = anim_utils.ANIM_TANGENT_TYPE[kp.interpolation]
         else:
-            out_tan = ANIM_TANGENT_TYPE[kp.handle_right_type]
+            out_tan = anim_utils.ANIM_TANGENT_TYPE[kp.handle_right_type]
             
         if prev_interp != 'BEZIER' and prev_interp is not None:
-            in_tan = ANIM_TANGENT_TYPE[kp.interpolation]
+            in_tan = anim_utils.ANIM_TANGENT_TYPE[kp.interpolation]
         else:
-            in_tan = ANIM_TANGENT_TYPE[kp.handle_left_type]
+            in_tan = anim_utils.ANIM_TANGENT_TYPE[kp.handle_left_type]
 
         if kp.handle_left_type == 'FREE' or kp.handle_right_type == 'FREE':
             tan_lock = 0
@@ -285,7 +201,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
         fc_unit_type = node.bl_rna.properties[fc_path].unit # get the curve unit (degrees, radians, linear, etc.)
 
     dt_input = 'time'
-    dt_output = ANIM_UNIT_TYPE[fc_unit_type]
+    dt_output = anim_utils.ANIM_UNIT_TYPE[fc_unit_type]
     dt_weighted = 1 # Blender always has weighted tangents
     dt_tan = angularUnit
     dt_preInf = dt_postInf = fc.extrapolation.lower() # set either linear or constant
@@ -293,8 +209,8 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     # check for any cyclic modifiers and apply a different pre and post infinity type
     for mod in fc.modifiers:
         if mod.type == 'CYCLES':
-            if mod.mode_before != 'NONE': dt_preInf = ANIM_CYCLES_TYPE[mod.mode_before]
-            if mod.mode_after != 'NONE': dt_postInf = ANIM_CYCLES_TYPE[mod.mode_after]
+            if mod.mode_before != 'NONE': dt_preInf = anim_utils.ANIM_CYCLES_TYPE[mod.mode_before]
+            if mod.mode_after != 'NONE': dt_postInf = anim_utils.ANIM_CYCLES_TYPE[mod.mode_after]
             break
  
     animDataString.write(tab+'input {};\n'.format(dt_input))
@@ -355,10 +271,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
         #     axis_ASCII = 87
         # else:
         #     axis_ASCII = 88
-
-        axis_ASCII = 88
         
-        fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+        fc_chan = chr(anim_utils.ASCII_X+fc.array_index) # start counting and return a character of either W, X, Y or Z
         node_name_final, row, child = node_info
 
         fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr_name, fc_chan)) # write basic node info
@@ -388,8 +302,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
         fc_i = 0
         for i, fc_group in enumerate(fcGroups):
             # translate attribute names
-            fc_path = FCURVE_PATHS_ID_TO_NAME[i]
-            try: attr = ANIM_ATTR_NAMES[fc_path]
+            fc_path = anim_utils.FCURVE_PATHS_ID_TO_NAME[i]
+            try: attr = anim_utils.ANIM_ATTR_NAMES[fc_path]
             except KeyError: attr = fc_path
 
             # sort the fcurves according to array_index
@@ -525,7 +439,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
-                            array_id = FCURVE_PATHS_NAME_TO_ID.get(fc_path, 4)
+                            array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc_path, 4)
                             # add the bone to a list and mark as animated bone
                             if boneCheckList[bone_id] == None:
                                 fc_list = [[] for i in range(5)]
@@ -535,7 +449,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                                 # update the entry with any fcurves left
                                 boneCheckList[bone_id][2][array_id].append(fc)
                     else:
-                        array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
+                        array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                         objFcurves[array_id].append(fc)
 
                 # look for all the required but non-animated bones and flag them to skip keying
@@ -577,7 +491,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                                 
             else:
                 for fc in action.fcurves:
-                    array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
+                    array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                     objFcurves[array_id].append(fc)
 
                 # write obj animation data
@@ -607,11 +521,11 @@ def anim_header_elements(scene, **kwargs):
     animVersion  = 1.1
     blenderVersion = bpy.app.version_string
     try:
-        timeUnit = ANIM_TIME_UNITS[scene.render.fps]
+        timeUnit = anim_utils.ANIM_TIME_UNITS[scene.render.fps]
     except KeyError: timeUnit = "Unknown Time Unit"
     finally: kwargs_mod["timeUnit"] = timeUnit
-    kwargs_mod["linearUnit"] = linearUnit = ANIM_LINEAR_UNITS[scene.unit_settings.length_unit]
-    kwargs_mod["angularUnit"] = angularUnit = ANIM_ANGULAR_UNITS[scene.unit_settings.system_rotation]
+    kwargs_mod["linearUnit"] = linearUnit = anim_utils.ANIM_LINEAR_UNITS[scene.unit_settings.length_unit]
+    kwargs_mod["angularUnit"] = angularUnit = anim_utils.ANIM_ANGULAR_UNITS[scene.unit_settings.system_rotation]
 
     # use timeline range if no custom range is set
     if not use_time_range:

@@ -28,6 +28,8 @@ if "bpy" in locals():
     import importlib
     if "export_anim" in locals():
         importlib.reload(export_anim)
+    if "import_anim" in locals():
+        importlib.reload(import_anim)
 
 import bpy
 from bpy.props import (
@@ -46,6 +48,88 @@ from bpy_extras.io_utils import (
     path_reference_mode,
     axis_conversion,
 )
+
+@orientation_helper(axis_forward='-Z', axis_up='Y')
+class ImportANIM(bpy.types.Operator, ImportHelper):
+    """Load a FBX file"""
+    bl_idname = "maya_anim.import"
+    bl_label = "Import ANIM"
+    bl_description = "Import animation curves using Autodesk Maya file format"
+    bl_options = {'UNDO', 'PRESET'}
+
+    directory: StringProperty()
+
+    filename_ext = ".anim"
+    filter_glob: StringProperty(default="*.anim", options={'HIDDEN'})
+
+    global_scale: FloatProperty(
+            name="Bone Scale",
+            description="Scale bone animation data\n\n"
+                        "Some software may have all the boens scaled up or down.\n"
+                        "Autodesk Maya may have top parent scale of 100 but still look normal,\n"
+                        "however bones are actually 100 times smaller than they should be",
+            min=0.001, max=1000.0,
+            soft_min=0.01, soft_max=1000.0,
+            default=1.0,
+            )
+    
+    bake_space_transform: BoolProperty(
+            name="Apply Transform",
+            description="Bake bones' space transform into armature, avoids getting unwanted\n"
+                        "rotations to objects when target space is not aligned with Blender's space\n\n"
+                        "Disable for Autodesk Maya",
+            default=False,
+            )
+
+    anim_offset: FloatProperty(
+            name="Animation Offset",
+            description="Offset to apply to animation during import, in frames",
+            default=1.0,
+            )
+
+    use_custom_props: BoolProperty(
+            name="Custom Properties",
+            description="Import user properties as custom properties",
+            default=True,
+            )
+    
+
+    def draw(self, context):
+        pass
+
+    def execute(self, context):
+        keywords = self.as_keywords(ignore=("filter_glob", "directory", "ui_tab", "filepath"))
+
+        from . import import_anim
+
+        return import_anim.load(self, context, filepath=self.filepath, **keywords)
+
+class ANIM_PT_import_transform(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Transform"
+    bl_parent_id = "FILE_PT_operator"
+
+    @classmethod
+    def poll(cls, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        return operator.bl_idname == "MAYA_ANIM_OT_import"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False  # No animation.
+
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        layout.prop(operator, "global_scale")
+        layout.prop(operator, "axis_forward")
+        layout.prop(operator, "axis_up")
+        row = layout.row()
+        row.prop(operator, "bake_space_transform")
 
 @orientation_helper(axis_forward='-Z', axis_up='Y')
 class ExportANIM(bpy.types.Operator, ExportHelper):
@@ -300,10 +384,15 @@ class ANIM_PT_export_animation(bpy.types.Panel):
         row = col.row()
         row.prop(operator, 'only_deform_bones')
 
+def menu_func_import(self, context):
+    self.layout.operator(ImportANIM.bl_idname, text="Maya Animation (.anim)")
+
 def menu_func_export(self, context):
     self.layout.operator(ExportANIM.bl_idname, text="Maya Animation (.anim)")
 
 classes = (
+    ImportANIM,
+    ANIM_PT_import_transform,
     ExportANIM,
     ANIM_PT_export_include,
     ANIM_PT_export_transform,
@@ -314,9 +403,11 @@ register_, unregister_ = bpy.utils.register_classes_factory(classes)
 
 def register():
     register_()
+    bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
 
 def unregister():
+    bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.remove(menu_func_export)
     unregister_()
 
