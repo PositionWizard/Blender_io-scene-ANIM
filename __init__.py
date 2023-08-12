@@ -16,7 +16,7 @@ bl_info = {
     "author" : "Czarpos",
     "description" : "Import/Export tool for .anim files created with Autodesk Maya.",
     "blender" : (3, 6, 1),
-    "version" : (1, 2, 4),
+    "version" : (1, 2, 5),
     "category": "Import-Export",
 	"location": "File > Import/Export, Scene properties",
     "warning" : "This addon is still in development.",
@@ -93,6 +93,23 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
             default=True,
             )
     
+    use_fps: BoolProperty(
+        name="Frame Rate",
+        description="Apply FPS settings from the file to scene",
+        default=True
+        )
+    
+    use_units: BoolProperty(
+        name="Unit Systems",
+        description="Set scene units from the file",
+        default=False
+        )
+    
+    use_timerange: BoolProperty(
+        name="Time Range",
+        description="Apply range for timeline as defined in the file",
+        default=False
+        )
 
     def draw(self, context):
         pass
@@ -103,6 +120,31 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
         from . import import_anim
 
         return import_anim.load(self, context, filepath=self.filepath, **keywords)
+
+class ANIM_PT_import_include(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Include"
+    bl_parent_id = "FILE_PT_operator"
+    @classmethod
+    def poll(cls, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        return operator.bl_idname == "MAYA_ANIM_OT_import"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False  # No animation.
+
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        sublayout = layout.column(heading="Apply to scene")
+        sublayout.prop(operator, "use_fps")
+        sublayout.prop(operator, "use_units")
+        sublayout.prop(operator, "use_timerange")
 
 class ANIM_PT_import_transform(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'
@@ -130,6 +172,30 @@ class ANIM_PT_import_transform(bpy.types.Panel):
         layout.prop(operator, "axis_up")
         row = layout.row()
         row.prop(operator, "bake_space_transform")
+
+class ANIM_PT_import_animation(bpy.types.Panel):
+    bl_space_type = 'FILE_BROWSER'
+    bl_region_type = 'TOOL_PROPS'
+    bl_label = "Animation"
+    bl_parent_id = "FILE_PT_operator"
+
+    @classmethod
+    def poll(cls, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        return operator.bl_idname == "MAYA_ANIM_OT_import"
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False  # No animation.
+
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        layout.prop(operator, "anim_offset")
+        layout.prop(operator, "use_custom_props")
 
 @orientation_helper(axis_forward='-Z', axis_up='Y')
 class ExportANIM(bpy.types.Operator, ExportHelper):
@@ -392,7 +458,9 @@ def menu_func_export(self, context):
 
 classes = (
     ImportANIM,
+    ANIM_PT_import_include,
     ANIM_PT_import_transform,
+    ANIM_PT_import_animation,
     ExportANIM,
     ANIM_PT_export_include,
     ANIM_PT_export_transform,

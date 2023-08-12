@@ -54,12 +54,22 @@ ANIM_CYCLES_TYPE = {
     'NONE': None,
 }
 
+B3D_CYCLES_TYPE = {
+    'cycle': 'REPEAT',
+    'cycleRelative': 'REPEAT_OFFSET',
+    'oscillate': 'MIRROR',
+    'linear': 'NONE',
+    'constant': 'NONE'
+}
+
 ANIM_UNIT_TYPE = { # blender defaults:
     'TIME': 'time', # frame
     'LENGTH': 'linear', # meter
     'ROTATION': 'angular', # radians
     'NONE': 'unitless'
 }
+
+B3D_UNIT_TYPE = {v: k for k, v in ANIM_UNIT_TYPE.items()}
 
 ANIM_TANGENT_TYPE = {
     'AUTO_CLAMPED': 'auto',
@@ -82,7 +92,7 @@ ANIM_ATTR_NAMES = {
 }
 
 B3D_ATTR_NAMES = {
-    "translate": 'translate',
+    "translate": 'location',
     "rotate": 'rotation_euler',
     "scale": 'scale'
 }

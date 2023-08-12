@@ -14,11 +14,11 @@ def getInt(value):
     except ValueError:
         return None
     
-def cleanLine(line):
+def cleanLine(line: str):
     """Clean line of semicolon and comments."""
     return line.split(";")[0].strip()
 
-def read_prop_single(line):
+def read_prop_single(line: str):
     """Read and return a property of single value: (prop, value)"""
     
     line = cleanLine(line)
@@ -27,7 +27,7 @@ def read_prop_single(line):
 
     return prop, value
 
-def read_prop_anim(line):
+def read_prop_anim(line: str):
     """Read anim line in one of 2 possible forms. Returns prop list."""
 
     line = cleanLine(line)
@@ -43,7 +43,7 @@ def read_prop_anim(line):
 
     return props, isEmpty
 
-def read_prop_keyframe(line):
+def read_prop_keyframe(line: str):
     """Read single keyframe properties.\n
     The amount of returned props can vary depending on in and out tangent types.
     For each 'fixed' tangent, two floats are added for angle and weight."""
