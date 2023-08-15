@@ -62,35 +62,10 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
     filename_ext = ".anim"
     filter_glob: StringProperty(default="*.anim", options={'HIDDEN'})
 
-    global_scale: FloatProperty(
-            name="Bone Scale",
-            description="Scale bone animation data\n\n"
-                        "Some software may have all the boens scaled up or down.\n"
-                        "Autodesk Maya may have top parent scale of 100 but still look normal,\n"
-                        "however bones are actually 100 times smaller than they should be",
-            min=0.001, max=1000.0,
-            soft_min=0.01, soft_max=1000.0,
-            default=1.0,
-            )
-    
-    bake_space_transform: BoolProperty(
-            name="Apply Transform",
-            description="Bake bones' space transform into armature, avoids getting unwanted\n"
-                        "rotations to objects when target space is not aligned with Blender's space\n\n"
-                        "Disable for Autodesk Maya",
+    use_selected_bones: BoolProperty(
+            name="Selected bones",
+            description="Import animation only for bones selected in Pose Mode",
             default=False,
-            )
-
-    anim_offset: FloatProperty(
-            name="Animation Offset",
-            description="Offset to apply to animation during import, in frames",
-            default=1.0,
-            )
-
-    use_custom_props: BoolProperty(
-            name="Custom Properties",
-            description="Import user properties as custom properties",
-            default=True,
             )
     
     use_fps: BoolProperty(
@@ -110,12 +85,56 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
         description="Apply range for timeline as defined in the file",
         default=False
         )
+    
+    global_scale: FloatProperty(
+            name="Bone Scale",
+            description="Scale bone animation data\n\n"
+                        "Some software may have all the boens scaled up or down.\n"
+                        "Autodesk Maya may have top parent scale of 100 but still look normal,\n"
+                        "however bones are actually 100 times smaller than they should be",
+            min=0.001, max=1000.0,
+            soft_min=0.01, soft_max=1000.0,
+            default=1.0,
+            )
+    
+    axis_transform: BoolProperty(
+            name="",
+            description="Whether to perform axis conversion or import raw keyframes",
+            default=True,
+        )
+    
+    bake_space_transform: BoolProperty(
+            name="Apply Transform",
+            description="Bake bones' space transform into armature, avoids getting unwanted\n"
+                        "rotations to objects when target space is not aligned with Blender's space\n\n"
+                        "Disable for Autodesk Maya",
+            default=False,
+            )
+
+    anim_offset: FloatProperty(
+            name="Animation Offset",
+            description="Offset to apply to animation during import, in frames",
+            default=1.0,
+            )
+    
+    use_custom_props: BoolProperty(
+            name="Custom Properties",
+            description="Import user properties as custom properties",
+            default=True,
+            )
 
     def draw(self, context):
         pass
 
     def execute(self, context):
         keywords = self.as_keywords(ignore=("filter_glob", "directory", "ui_tab", "filepath"))
+
+        global_matrix = (axis_conversion(from_forward=self.axis_forward,
+                                         from_up=self.axis_up,
+                                         ).to_4x4())
+
+
+        keywords["global_matrix"] = global_matrix
 
         from . import import_anim
 
@@ -141,7 +160,10 @@ class ANIM_PT_import_include(bpy.types.Panel):
         sfile = context.space_data
         operator = sfile.active_operator
 
-        sublayout = layout.column(heading="Apply to scene")
+        sublayout = layout.column(heading="Limit to")
+        sublayout.prop(operator, "use_selected_bones")
+
+        sublayout = layout.column(heading="Scene settings")
         sublayout.prop(operator, "use_fps")
         sublayout.prop(operator, "use_units")
         sublayout.prop(operator, "use_timerange")
@@ -158,6 +180,12 @@ class ANIM_PT_import_transform(bpy.types.Panel):
         operator = sfile.active_operator
 
         return operator.bl_idname == "MAYA_ANIM_OT_import"
+    
+    def draw_header(self, context):
+        sfile = context.space_data
+        operator = sfile.active_operator
+
+        self.layout.prop(operator, "axis_transform", text="")
 
     def draw(self, context):
         layout = self.layout

@@ -1,4 +1,5 @@
 import bpy, math
+from mathutils import Matrix
 
 UNITS = {
     "METERS": 1.0,  # Ref unit!
@@ -114,3 +115,41 @@ def units_convertor(u_from, u_to):
 
 linear_converter = units_convertor('METERS', bpy.context.scene.unit_settings.length_unit) 
 angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation)
+
+def dupe_obj(ctx: bpy.context, obj: bpy.types.Object):
+    obj = obj.copy()
+    arm = obj.data.copy()
+    obj.data = arm
+
+    ctx.scene.collection.objects.link(obj)
+    obj.make_local()
+    obj.data.make_local()
+
+    return obj
+
+def bone_calculate_parentSpace(bone: bpy.types.Bone):
+    # Get bone's rest pose parent-space matrix and if bone has no parent, then get armature-space matrix
+    if bone.parent:
+        boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)
+    else:
+        boneMat = bone.matrix_local
+     
+    return boneMat
+
+def convert_axes(obj: bpy.types.Object, global_matrix, global_scale, bake_space_transform, reverse=False):
+    # Revert changes when done with the object
+    if reverse:
+        global_matrix = global_matrix.inverted()
+        global_scale = 1/global_scale
+
+    if bake_space_transform:
+        dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
+    else: dataMat = Matrix.Scale(global_scale, 4)
+
+    # transform armature or mesh by the new axis
+    # this is basically "apply transforms"
+    if hasattr (obj.data, 'transform'):
+        obj.data.transform(dataMat)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.object.mode_set(mode='OBJECT')

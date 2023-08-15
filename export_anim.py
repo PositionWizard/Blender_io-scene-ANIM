@@ -10,19 +10,10 @@ from . import anim_utils
 
 """
 TODO
-- Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
+- [Reminder to self: This is unfortunately impossible, I'm already doing the best possible thing]
+    Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
+- Bugfix: Keyframes aren't restricted to the time range from the timeline
 """
-
-def dupe_obj(obj):
-    obj = obj.copy()
-    arm = obj.data.copy()
-    obj.data = arm
-
-    bpy.context.scene.collection.objects.link(obj)
-    obj.make_local()
-    obj.data.make_local()
-
-    return obj
 
 # Sanitization replaces all special characters with underscores
 def names_sanitize(name, wildcard=""):
@@ -31,15 +22,6 @@ def names_sanitize(name, wildcard=""):
     else:
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
-
-def bone_calculate_parentSpace(bone):
-    # Get bone's parent-space matrix and if bone has no parent, then get armature-space matrix
-    if bone.parent:
-        boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)
-    else:
-        boneMat = bone.matrix_local
-     
-    return boneMat
 
 def offset_rotation(keys_array, fc_path, node_rot):
     # get a rotation matrix of the animated values
@@ -381,24 +363,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             return data_index
         else:
             return -1
-
-    def convert_Axes(obj, global_matrix, global_scale, reverse=False):
-        # Revert changes when done with the object
-        if reverse:
-            global_matrix = global_matrix.inverted()
-            global_scale = 1/global_scale
-
-        if bake_space_transform:
-            dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
-        else: dataMat = Matrix.Scale(global_scale, 4)
-
-        # transform armature or mesh by the new axis
-        # this is basically "apply transforms"
-        if hasattr (obj.data, 'transform'):
-            obj.data.transform(dataMat)
-
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.object.mode_set(mode='OBJECT')
     
     for obj in objs:
         try: obj.animation_data.action.fcurves
@@ -412,9 +376,9 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             # Clone and convert the armature to different axis upon export
             if bake_axis:
                 obj_og = obj
-                obj = dupe_obj(obj)
+                obj = anim_utils.dupe_obj(context, obj)
                 context.view_layer.objects.active = obj
-                convert_Axes(obj, global_matrix, global_scale)
+                anim_utils.convert_axes(obj, global_matrix, global_scale, bake_space_transform)
                 
             objFcurves = [[] for i in range(5)]
 
@@ -481,7 +445,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                         if fcBoneData[1] and bone_frames:
                             pbone = obj.pose.bones[fcBoneData[0].name]
                             # Do matrix transformations only once per bone!
-                            bone_tForm_parentSpace = bone_calculate_parentSpace(fcBoneData[0])
+                            bone_tForm_parentSpace = anim_utils.bone_calculate_parentSpace(fcBoneData[0])
                             prep_node(pbone, bone_info, fcBoneData[2], bone_tForm_parentSpace, True, **kwargs_mod)
 
                         else:

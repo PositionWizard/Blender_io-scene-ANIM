@@ -1,3 +1,9 @@
+# Things that need to be done to properly import anim files from Maya and other sources:
+# 1. Perform general axis conversion on the object/armature
+# 2. Remove the transform offset that's in parent-child bone relationship
+#   (Blender has animation relative to the rest pose, Maya has it relative to the parent)
+# 3. Apply Bone Scale to each bone by multiplying this scale by location values
+
 if "bpy" in locals():
     import importlib
     if "parse_anim" in locals():
@@ -245,7 +251,21 @@ def get_fcDataPath(obj: bpy.types.Object,
     
     else:
         return None
-    
+
+def get_posebone_names(ctx: bpy.context, obj: bpy.types.Object, use_selected_bones: bool):
+    posebones = obj.pose.bones
+    if use_selected_bones:
+        org_mode = obj.mode
+        bpy.ops.object.mode_set(mode='POSE')
+        sel_bones = ctx.selected_pose_bones_from_active_object
+        bpy.ops.object.mode_set(mode=org_mode)
+
+        if sel_bones: posebones = sel_bones
+
+    pbone_names = [pb.name for pb in posebones]
+
+    return pbone_names
+
 def setup_fcurve(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve):
     # setup extrapolation and cycling
     fc_postInf = anim_fc.settings["postInfinity"]
@@ -262,7 +282,7 @@ def setup_fcurve(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve):
 
     return fc
     
-def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, linearUnit, angularUnit, **settings):
+def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, linearUnit, angularUnit, **settings):
     linearUnit = anim_utils.B3D_LINEAR_UNITS[linearUnit]
     angularUnit = anim_utils.B3D_ANGULAR_UNITS[angularUnit]
 
@@ -280,7 +300,7 @@ def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, linearUnit, angu
         ktype = 'KEYFRAME'
         if anim_key.isbreakdown:
             ktype = 'BREAKDOWN'
-        kp = fc.keyframe_points.insert(frame=anim_key.time, value=anim_key.value, keyframe_type=ktype)
+        kp = fc.keyframe_points.insert(frame=anim_offset+anim_key.time, value=anim_key.value, keyframe_type=ktype)
         # if anim_fc.node.name == 'Root':
         #     print(f"{anim_fc.node.property}_{anim_fc.node.array_index} of value: {anim_key.value}, at frame: {anim_key.time}")
 
@@ -291,6 +311,8 @@ def write_animation(op: bpy.types.Operator,
                     anim_fcurves: list[ANIM_FCurve],
                     settings,
                     use_custom_props,
+                    use_selected_bones,
+                    anim_offset,
                     **kwargs):
     animData = obj.animation_data
     if not animData:
@@ -300,10 +322,12 @@ def write_animation(op: bpy.types.Operator,
     animData.action = action
 
     pbone_names = []
-    if obj.type == 'ARMATURE':
-        pbone_names = [pb.name for pb in obj.pose.bones]
-
     doObj = True
+    if obj.type == 'ARMATURE':
+        if use_selected_bones:
+            doObj = False
+        pbone_names = get_posebone_names(ctx, obj, use_selected_bones)
+
     prevNode = ""
     for i, anim_fc in enumerate(anim_fcurves):
         if doObj and anim_fc.node.name != prevNode and i>0:
@@ -317,10 +341,10 @@ def write_animation(op: bpy.types.Operator,
 
         fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
 
-        if fc_funcRes != None:
-            fc_datapath, fc_group = fc_funcRes
-        else:
+        if fc_funcRes == None:
             continue
+
+        fc_datapath, fc_group = fc_funcRes
 
         # handle an error in case it tries to insert an already existing fcurve   
         try:    
@@ -330,7 +354,7 @@ def write_animation(op: bpy.types.Operator,
             fc = action.fcurves.find(data_path=fc_datapath, index=anim_fc.node.array_index)
 
         fc = setup_fcurve(fc, anim_fc)
-        write_keyframes(fc, anim_fc, **settings)
+        write_keyframes(fc, anim_fc, anim_offset, **settings)
 
     return
 
@@ -361,20 +385,20 @@ def load(operator: bpy.types.Operator,
 
     anim_fcurves = []
     node = None
-    for i, fl in enumerate(fbody):
+    for fl in fbody:
         if fl.startswith("anim "):
             # print(f"{i}: reading 'anim' line...")
             fc_keys = None
             node = get_node_elements(fl)
-
+        
         if fl.startswith("animData {"):
             # print(f"{i}: reading 'animData' block...")
             fl = ioStream.readline()                                        # skip to next line
             fc_settings, fc_keys = get_animData_elements(fl, ioStream)
 
-        if node and fc_keys:
             # print(f"{i}: SAVING to datablock...")
             anim_fcurves.append(ANIM_FCurve(node, fc_settings, fc_keys))
+
     
     # Close the file to free up memory, since it's no longer needed
     ioStream.close()

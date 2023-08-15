@@ -34,7 +34,7 @@ def read_prop_anim(line: str):
     offset = len("anim ")
     props = line[offset:].split()
     isEmpty = False
-    if len(props) < 4:
+    if len(props) < 5:
         isEmpty = True
 
     # cast last 3 elements to int
