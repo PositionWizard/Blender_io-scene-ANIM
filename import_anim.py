@@ -308,7 +308,7 @@ def write_animation(op: bpy.types.Operator,
                     ctx: bpy.context,
                     obj: bpy.types.Object,
                     filename: str,
-                    anim_fcurves: list[ANIM_FCurve],
+                    anim_nodes: list[list[ANIM_FCurve]],
                     settings,
                     use_custom_props,
                     use_selected_bones,
@@ -328,33 +328,32 @@ def write_animation(op: bpy.types.Operator,
             doObj = False
         pbone_names = get_posebone_names(ctx, obj, use_selected_bones)
 
-    prevNode = ""
-    for i, anim_fc in enumerate(anim_fcurves):
-        if doObj and anim_fc.node.name != prevNode and i>0:
+    for i, anim_fcurves in enumerate(anim_nodes):
+        if doObj and i>0:
             doObj = False
-        prevNode = anim_fc.node.name
 
-        # skip custom properties based on user flag
-        is_custom_prop = anim_fc.node.property not in anim_utils.ANIM_ATTR_NAMES.keys()
-        if not use_custom_props and is_custom_prop:
-            continue
+        for anim_fc in anim_fcurves:
+            # skip custom properties based on user flag
+            is_custom_prop = anim_fc.node.property not in anim_utils.ANIM_ATTR_NAMES.keys()
+            if not use_custom_props and is_custom_prop:
+                continue
 
-        fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
+            fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
 
-        if fc_funcRes == None:
-            continue
+            if fc_funcRes == None:
+                continue
 
-        fc_datapath, fc_group = fc_funcRes
+            fc_datapath, fc_group = fc_funcRes
 
-        # handle an error in case it tries to insert an already existing fcurve   
-        try:    
-            fc = action.fcurves.new(fc_datapath, index=anim_fc.node.array_index, action_group=fc_group)
-        except RuntimeError as e:
-            # operator.report({'INFO'}, ("Couldn't add curve for %r (%s)") % (fc_datapath, e))
-            fc = action.fcurves.find(data_path=fc_datapath, index=anim_fc.node.array_index)
+            # handle an error in case it tries to insert an already existing fcurve   
+            try:    
+                fc = action.fcurves.new(fc_datapath, index=anim_fc.node.array_index, action_group=fc_group)
+            except RuntimeError as e:
+                # operator.report({'INFO'}, ("Couldn't add curve for %r (%s)") % (fc_datapath, e))
+                fc = action.fcurves.find(data_path=fc_datapath, index=anim_fc.node.array_index)
 
-        fc = setup_fcurve(fc, anim_fc)
-        write_keyframes(fc, anim_fc, anim_offset, **settings)
+            fc = setup_fcurve(fc, anim_fc)
+            write_keyframes(fc, anim_fc, anim_offset, **settings)
 
     return
 
@@ -383,13 +382,17 @@ def load(operator: bpy.types.Operator,
     settings, fbody = get_header_elements(ioStream)
     setupScene(operator, context, **settings, **kwargs)
 
-    anim_fcurves = []
+    anim_nodes = []
+    nodeNames = []
     node = None
     for fl in fbody:
         if fl.startswith("anim "):
             # print(f"{i}: reading 'anim' line...")
             fc_keys = None
             node = get_node_elements(fl)
+            if node and node.name not in nodeNames:
+                nodeNames.append(node.name)
+                anim_nodes.append([])
         
         if fl.startswith("animData {"):
             # print(f"{i}: reading 'animData' block...")
@@ -397,14 +400,23 @@ def load(operator: bpy.types.Operator,
             fc_settings, fc_keys = get_animData_elements(fl, ioStream)
 
             # print(f"{i}: SAVING to datablock...")
-            anim_fcurves.append(ANIM_FCurve(node, fc_settings, fc_keys))
-
+            node_id = nodeNames.index(node.name)
+            animFC = ANIM_FCurve(node, fc_settings, fc_keys)
+            anim_nodes[node_id].append(animFC)
+            
+    # for fcs in anim_nodes:
+    #     print("----------------------------------------------")
+    #     print(len(fcs))
+    #     for fc in fcs:
+    #         print(f"{fc.node.name}, {fc.node.property} [{fc.node.array_index}]")
+    #     print("----------------------------------------------")
     
     # Close the file to free up memory, since it's no longer needed
     ioStream.close()
 
     filename = bpy.path.basename(filepath).split(".")[0]
-    write_animation(operator, context, obj, filename, anim_fcurves, settings, **kwargs)
+    # Clone and convert the armature to different axis upon export
+    write_animation(operator, context, obj, filename, anim_nodes, settings, **kwargs)
             
     operator.report({'INFO'}, "Import finished in %.4f sec." % (time.process_time() - start_time))
     return result
