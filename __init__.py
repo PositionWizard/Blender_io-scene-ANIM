@@ -103,9 +103,15 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
             default=True,
         )
     
+    apply_unit_linear: BoolProperty(
+            name="Apply Linear Unit",
+            description="Convert linear values by taking into account file's linear unit definition.",
+            default=True,
+        )
+    
     bake_space_transform: BoolProperty(
             name="Apply Transform",
-            description="Bake bones' space transform into armature, avoids getting unwanted\n"
+            description="Bake space transform into root bone animation. Avoids getting unwanted\n"
                         "rotations to objects when target space is not aligned with Blender's space\n\n"
                         "Disable for Autodesk Maya",
             default=False,
@@ -198,8 +204,9 @@ class ANIM_PT_import_transform(bpy.types.Panel):
         layout.prop(operator, "global_scale")
         layout.prop(operator, "axis_forward")
         layout.prop(operator, "axis_up")
-        row = layout.row()
-        row.prop(operator, "bake_space_transform")
+        col = layout.column()
+        col.prop(operator, "apply_unit_linear")
+        col.prop(operator, "bake_space_transform")
 
 class ANIM_PT_import_animation(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'

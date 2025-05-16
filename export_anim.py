@@ -23,19 +23,6 @@ def names_sanitize(name, wildcard=""):
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
 
-def offset_rotation(keys_array, fc_path, node_rot):
-    # get a rotation matrix of the animated values
-    # TODO add option to retain original bone rotation  
-    if fc_path.endswith('quaternion'):
-        key_rotValues = Quaternion(keys_array)
-    else:
-        key_Euler = Euler(keys_array, 'XYZ')
-        key_rotValues = key_Euler.to_quaternion()
-
-    rotMat = node_rot @ key_rotValues
-
-    return rotMat
-
 # Offset transforms for multiple channels at once per transform type
 def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_array, apply_scaling, attr_name, global_scale, **kwargs):
     key_values_Space = [None]*3
@@ -49,7 +36,7 @@ def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_a
 
     # Transform rotation and translation curves to a new space
     if attr_name == 'rotate':
-        rotMat = offset_rotation(keys_array, fc_path, node_rot)
+        rotMat = anim_utils.offset_rotation(keys_array, fc_path, node_rot)
 
         # TODO add option to retain original bone rotation        
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
@@ -86,6 +73,8 @@ def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_a
         # TODO do a proper fcurve swapping when doing axis conversions and armature transformations, instead of baking all relevant channels
         if not kp_found:
             fc.keyframe_points.insert(frame=frame, value=t_value)
+
+    return key_values_Space[1]
 
 def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kwargs):
     keyString = io.StringIO()
@@ -304,6 +293,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                 if i<3 and bake_axis:
                     # create fcurves for entire array of a single property if one fcurve was keyed but others are straight up missing
                     # this is needed to properly evaluate fcurves and convert the axes
+                    # if not (full euler/location or full quaternion)
                     if not ((len(fc_group) == 3 and i != 2) or (len(fc_group) == 4)):
                         # only for quaternion
                         if i == 2:
@@ -338,14 +328,14 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                             keys_array_list[j].append(fc_value)
                     
                     # get rotation values as reference to properly filter next euler values
-                    rotRef_mat = offset_rotation(keys_array_list[0], fc_path, node_tForm_Space.decompose()[1])
+                    rotRef_mat = anim_utils.offset_rotation(keys_array_list[0], fc_path, node_tForm_Space.decompose()[1])
                     eulRef = rotRef_mat.to_euler('XYZ')
 
                     # have to loop through all the frames again to do the offset calculations, unfortunately...
                     # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                     for j, fr in enumerate(frames):
                         # Do calculations for entire frames
-                        offset_transforms(node_tForm_Space, eulRef, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
+                        eulRef = offset_transforms(node_tForm_Space, eulRef, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for j, fc in enumerate(fc_group):
                 if fc.data_path.endswith('quaternion') and j == 3:

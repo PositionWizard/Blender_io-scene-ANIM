@@ -1,5 +1,5 @@
 import bpy, math
-from mathutils import Matrix
+from mathutils import Matrix, Euler, Quaternion
 
 UNITS = {
     "METERS": 1.0,  # Ref unit!
@@ -116,6 +116,16 @@ def units_convertor(u_from, u_to):
 linear_converter = units_convertor('METERS', bpy.context.scene.unit_settings.length_unit) 
 angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation)
 
+def anim_unit_converter(animData_output: str, linearUnit: str, angularUnit: str):
+    linearUnit = B3D_LINEAR_UNITS[linearUnit]
+    angularUnit = B3D_ANGULAR_UNITS[angularUnit]
+
+    fc_unit = B3D_UNIT_TYPE[animData_output]
+    unit_convert = {'LENGTH': units_convertor(linearUnit, 'METERS'),
+                    'ROTATION': units_convertor(angularUnit, 'RADIANS')}
+    
+    return fc_unit, unit_convert
+
 def dupe_obj(ctx: bpy.context, obj: bpy.types.Object):
     obj = obj.copy()
     arm = obj.data.copy()
@@ -126,6 +136,19 @@ def dupe_obj(ctx: bpy.context, obj: bpy.types.Object):
     obj.data.make_local()
 
     return obj
+
+def offset_rotation(keys_array, fc_path, node_rot):
+    # get a rotation matrix of the animated values
+    # TODO add option to retain original bone rotation  
+    if fc_path.endswith('quaternion'):
+        key_rotValues = Quaternion(keys_array)
+    else:
+        key_Euler = Euler(keys_array, 'XYZ')
+        key_rotValues = key_Euler.to_quaternion()
+
+    rotMat = node_rot @ key_rotValues
+
+    return rotMat
 
 def bone_calculate_parentSpace(bone: bpy.types.Bone):
     # Get bone's rest pose parent-space matrix and if bone has no parent, then get armature-space matrix
