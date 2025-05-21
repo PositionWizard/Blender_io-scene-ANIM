@@ -150,7 +150,7 @@ def offset_rotation(keys_array, fc_path, node_rot):
 
     return rotMat
 
-def bone_calculate_parentSpace(bone: bpy.types.Bone):
+def bone_calculate_parentSpace(bone: bpy.types.Bone) -> Matrix:
     # Get bone's rest pose parent-space matrix and if bone has no parent, then get armature-space matrix
     if bone.parent:
         boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)

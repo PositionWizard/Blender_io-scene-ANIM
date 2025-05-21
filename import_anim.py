@@ -289,7 +289,7 @@ def setup_fcurve(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve):
 def pack_anim_fcurves(animFC: ANIM_FCurve, nodeNames: list, anim_nodes: list):
     array_id = 1+anim_utils.FCURVE_PATHS_NAME_TO_ID.get(animFC.node.property, 4)     # map property name to an ID to group those properties together
     node_id = nodeNames.index(animFC.node.name)                                    # get node ID to put fcurves in a group for this node
-    if not anim_nodes[node_id]:                                                    # if slot for a node group is empty, fill it with empty lists, one for each propert group
+    if not anim_nodes[node_id]:                                                    # if slot for a node group is empty, fill it with empty lists, one for each property group
         # animFC_group = [[] for i in range(5)]
         anim_nodes[node_id] = ANIM_FC_PropertyGroup(animFC.node.name, [], [], [], [], [])
     
@@ -304,7 +304,7 @@ def get_frames(fcurves: list[ANIM_FCurve], frames=set()):
 
     return frames
 
-def declare_anim_key_simple(t: float, val: float):
+def animkey_make_simple(t: float, val: float):
     return ANIM_Keyframe(t, val, 'auto', 'auto', 1, 0, 0, None, None, None, None)
 
 def complete_animFCgroup(anim_fcgroup: list[ANIM_FCurve], first_frame: float):
@@ -319,7 +319,7 @@ def complete_animFCgroup(anim_fcgroup: list[ANIM_FCurve], first_frame: float):
     for k, val in enumerate(fc_identity):
         if k not in fc_ids:
             p0 = anim_fcgroup[0]
-            afc = ANIM_FCurve(ANIM_Node(p0.node.name, p0.node.property, k, p0.node.children, -1), p0.settings, [declare_anim_key_simple(first_frame, val)])
+            afc = ANIM_FCurve(ANIM_Node(p0.node.name, p0.node.property, k, p0.node.children, -1), p0.settings, [animkey_make_simple(first_frame, val)])
             fc_group_new[k] = afc
             
         try:
@@ -341,8 +341,33 @@ def transpose_frameArray_to_propArray(anim_fcgroup: list[ANIM_FCurve], frame_arr
 
     return anim_fcgroup_new
 
+def get_neighbor_keys(anim_fc: ANIM_FCurve, frame: float):
+    """Returns a tuple of (previous, next) ANIM_Keyframes closest to a given frame."""
+    last_key = None
+    for key in anim_fc.keys:
+        if key.time > frame:
+            return last_key, key
+        last_key = key
+
+    return last_key, None
+
+def animkey_create_fill(last_key: ANIM_Keyframe, next_key: ANIM_Keyframe, frame: float):
+    """Create a new key, with linearly interpolated value between last and next closest keys."""
+
+    if not last_key:
+        return next_key
+
+    if not next_key:
+        return last_key
+
+    if last_key and next_key:
+        return animkey_make_simple(frame, (last_key.value+next_key.value)/2) # temporary math, not taking account for frame position
+
+    return animkey_make_simple(frame, 0)
+
 def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], frames, node_matrix: Matrix, linearUnit, angularUnit, **settings):
-    # transpose a list of fcurves which contain keyframes, into a list of frames containting keyframe groups for each fcurve
+    """Transpose a list of fcurves which contain keyframes, into a list of frames containting keyframe groups for each fcurve."""
+    
     loc, rot, scale = node_matrix.decompose()
     rot = rot.to_euler('XYZ')
 
@@ -353,33 +378,33 @@ def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], fr
     }
 
     print(f"{anim_fcgroup[0].node.name}_{anim_fcgroup[0].node.property}: {transform_map[anim_fcgroup[0].node.property]}")
+    animkeys_channel_list, values_channel_list = [], []
 
-    keys_array_list = []
-    animkeys_array_list = []
+    # loop through each channel (fcurve) of a property and gather ANIM_Keyframes and values into lists for each frame
     for k, fr in enumerate(frames):
-        # get all keyframe values for this property
-        keys_array_list.append([])
-        animkeys_array_list.append([])
+        values_channel_list.append([])
+        animkeys_channel_list.append([])
         for afc in anim_fcgroup:
-            default_keyValue = round(transform_map[afc.node.property][afc.node.array_index], 6)
-            (afc_value, afc_key) = next(((key.value, key) for key in afc.keys if key.time == fr), (0, None))
+            # default_keyValue = round(transform_map[afc.node.property][afc.node.array_index], 6)
+            afc_key = next((key for key in afc.keys if key.time == fr), None)
+            afc_value = 0
 
-            if afc_key:
-                fc_unit, unit_converter = anim_utils.anim_unit_converter(afc.settings["output"], linearUnit, angularUnit)
-                if fc_unit in unit_converter.keys() and afc.node.property != 'scale':
-                    afc_value = unit_converter[fc_unit](afc_value)
-
-            keys_array_list[k].append(afc_value)
-
+            # estimate a new value from existing neighboring keys if there is no keyframe on a current frame of given property channel but other channel has it
             if not afc_key:
-                print(f"{afc.node.name}_{afc.node.property}[{afc.node.array_index}] ({fr}): {afc_value}")
+                print("Property on following frame is missing! Filling...")
+                print(f"{afc.node.name}_{afc.node.property}[{afc.node.array_index}], frame: {fr}")
 
-            if not afc_key:
-                afc_key = declare_anim_key_simple(fr, afc_value)
+                last_key, next_key = get_neighbor_keys(afc, fr)
+                afc_key = animkey_create_fill(last_key, next_key, fr)
+            
+            fc_unit, unit_converter = anim_utils.anim_unit_converter(afc.settings["output"], linearUnit, angularUnit)
+            if fc_unit in unit_converter.keys() and afc.node.property != 'scale':
+                afc_value = unit_converter[fc_unit](afc_key.value)
 
-            animkeys_array_list[k].append(afc_key)
+            values_channel_list[k].append(afc_value)
+            animkeys_channel_list[k].append(afc_key)
 
-    return keys_array_list, animkeys_array_list
+    return values_channel_list, animkeys_channel_list
 
 # Offset transforms for multiple channels at once per transform type
 def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys_array: list, animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float):
