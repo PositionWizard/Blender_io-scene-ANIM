@@ -12,6 +12,8 @@ if "bpy" in locals():
         importlib.reload(anim_utils)
 
 import bpy, io, time
+from mathutils import Matrix, Vector, Euler
+
 from typing import NamedTuple
 from dataclasses import dataclass
 
@@ -82,6 +84,14 @@ class ANIM_FCurve(NamedTuple):
 
     keys: list[ANIM_Keyframe]
     """List of keyframes for this F-Curve."""
+
+class ANIM_FC_PropertyGroup(NamedTuple):
+    name: str
+    location: list[ANIM_FCurve]
+    rotation_euler: list[ANIM_FCurve]
+    rotation_quaternion: list[ANIM_FCurve]
+    scale: list[ANIM_FCurve]
+    custom: list[ANIM_FCurve]
 
 HEADER_PROP_TYPES = {
     "animVersion": lambda x: tuple(map(int, x.split('.'))),
@@ -208,12 +218,6 @@ def add_custom_props(node, prop):
         pass
     return
 
-# def isFirstNode(name, do, prevName, i):
-#     if name != prevName and i>0:
-#         return False, name
-    
-#     return do, name
-
 # TODO handle visibility animation as it's different paths for bones and objects
 def prepare_custom_prop(node, prop):
     add_custom_props(node, prop)
@@ -235,7 +239,7 @@ def get_fcDataPath(obj: bpy.types.Object,
         # support for custom properties
         if is_custom_prop:
             c_prop = prepare_custom_prop(pbone, anim_fc.node.property)
-            fc_datapath += c_prop
+            fc_datapath = pbone_path+c_prop
 
         return fc_datapath, fc_group
 
@@ -281,21 +285,155 @@ def setup_fcurve(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve):
         mod.mode_before = anim_utils.B3D_CYCLES_TYPE[fc_postInf]
 
     return fc
-    
-def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, linearUnit, angularUnit, **settings):
-    linearUnit = anim_utils.B3D_LINEAR_UNITS[linearUnit]
-    angularUnit = anim_utils.B3D_ANGULAR_UNITS[angularUnit]
 
-    fc_unit = anim_utils.B3D_UNIT_TYPE[anim_fc.settings["output"]]
-    unit_convert = {'LENGTH': anim_utils.units_convertor(linearUnit, 'METERS'),
-                    'ROTATION': anim_utils.units_convertor(angularUnit, 'RADIANS')}
+def pack_anim_fcurves(animFC: ANIM_FCurve, nodeNames: list, anim_nodes: list):
+    array_id = 1+anim_utils.FCURVE_PATHS_NAME_TO_ID.get(animFC.node.property, 4)     # map property name to an ID to group those properties together
+    node_id = nodeNames.index(animFC.node.name)                                    # get node ID to put fcurves in a group for this node
+    if not anim_nodes[node_id]:                                                    # if slot for a node group is empty, fill it with empty lists, one for each propert group
+        # animFC_group = [[] for i in range(5)]
+        anim_nodes[node_id] = ANIM_FC_PropertyGroup(animFC.node.name, [], [], [], [], [])
+    
+    anim_nodes[node_id][array_id].append(animFC)                                   # add animation curve to a correct property group, under a node group
+
+    return anim_nodes
+
+def get_frames(fcurves: list[ANIM_FCurve], frames=set()):
+    for anim_fc in fcurves:
+        fri = [kp.time for kp in anim_fc.keys]
+        frames.update(fri)
+
+    return frames
+
+def declare_anim_key_simple(t: float, val: float):
+    return ANIM_Keyframe(t, val, 'auto', 'auto', 1, 0, 0, None, None, None, None)
+
+def complete_animFCgroup(anim_fcgroup: list[ANIM_FCurve], first_frame: float):
+    # TODO quaternion handling?
+    fc_identity = [0,0,0]
+    fc_group_new = [None]*3
+
+    # get a list of fcurve indices for a given property
+    fc_ids = [afc.node.array_index for afc in anim_fcgroup]
+
+    # create missing curves for the property and insert basic keyframes
+    for k, val in enumerate(fc_identity):
+        if k not in fc_ids:
+            p0 = anim_fcgroup[0]
+            afc = ANIM_FCurve(ANIM_Node(p0.node.name, p0.node.property, k, p0.node.children, -1), p0.settings, [declare_anim_key_simple(first_frame, val)])
+            fc_group_new[k] = afc
+            
+        try:
+            pos_id = anim_fcgroup[k].node.array_index
+            fc_group_new[pos_id] = anim_fcgroup[k]
+        except IndexError: continue
+
+    fc_group_new = list[ANIM_FCurve](fc_group_new)
+
+    return fc_group_new
+
+def transpose_frameArray_to_propArray(anim_fcgroup: list[ANIM_FCurve], frame_array: list[list[ANIM_Keyframe]]):
+    # pack new 'baked' keyframes back into a proper structure and finally into a new list of property's curves
+    anim_fcgroup_new = list[ANIM_FCurve]()
+    for afc in anim_fcgroup:
+        keys_new = [keys_array[afc.node.array_index] for keys_array in frame_array]
+        afc_node_new = ANIM_FCurve(afc.node, afc.settings, keys_new)
+        anim_fcgroup_new.append(afc_node_new)
+
+    return anim_fcgroup_new
+
+def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], frames, node_matrix: Matrix, linearUnit, angularUnit, **settings):
+    # transpose a list of fcurves which contain keyframes, into a list of frames containting keyframe groups for each fcurve
+    loc, rot, scale = node_matrix.decompose()
+    rot = rot.to_euler('XYZ')
+
+    transform_map = {
+        'location': loc,
+        'rotation_euler': rot,
+        'scale': scale
+    }
+
+    print(f"{anim_fcgroup[0].node.name}_{anim_fcgroup[0].node.property}: {transform_map[anim_fcgroup[0].node.property]}")
+
+    keys_array_list = []
+    animkeys_array_list = []
+    for k, fr in enumerate(frames):
+        # get all keyframe values for this property
+        keys_array_list.append([])
+        animkeys_array_list.append([])
+        for afc in anim_fcgroup:
+            default_keyValue = round(transform_map[afc.node.property][afc.node.array_index], 6)
+            (afc_value, afc_key) = next(((key.value, key) for key in afc.keys if key.time == fr), (0, None))
+
+            if afc_key:
+                fc_unit, unit_converter = anim_utils.anim_unit_converter(afc.settings["output"], linearUnit, angularUnit)
+                if fc_unit in unit_converter.keys() and afc.node.property != 'scale':
+                    afc_value = unit_converter[fc_unit](afc_value)
+
+            keys_array_list[k].append(afc_value)
+
+            if not afc_key:
+                print(f"{afc.node.name}_{afc.node.property}[{afc.node.array_index}] ({fr}): {afc_value}")
+
+            if not afc_key:
+                afc_key = declare_anim_key_simple(fr, afc_value)
+
+            animkeys_array_list[k].append(afc_key)
+
+    return keys_array_list, animkeys_array_list
+
+# Offset transforms for multiple channels at once per transform type
+def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys_array: list, animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float):
+    key_values_Space = [None]*3
+    node_loc, node_rot, node_scale = node_matrix_parent.decompose()
+
+    transform_map = {
+        'location': key_values_Space[0],
+        'rotation_euler': key_values_Space[1],
+        'scale': node_scale
+    }
+
+    # Transform rotation and translation curves to a new space
+    if prop == 'rotation_euler':
+        rotMat = anim_utils.offset_rotation(keys_array, prop, node_rot)
+
+        # TODO add option to retain original bone rotation        
+        # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
+        # filter euler values (anti-gimbal lock) by a compatibile euler from the already converted first rotation keyframes, NOT current keyframes pre-conversion
+        # TODO gimbal lock happens either way and I'm thinking maybe the reason is comparing to the first frame's euler rather than PREVIOUS one... doesn't that make more sense?
+        key_values_Space[1] = rotMat.to_euler('XYZ', eulRef)
+
+        transform_map[prop] = key_values_Space[1]
+
+    elif prop == 'location':
+        key_transValues = Vector(keys_array).to_3d()
+        # scale curves according to Bone Scale but only for bones
+        if apply_scaling:
+            key_transValues *= global_scale
+        newMat = node_matrix_parent @ Matrix.Translation(key_transValues)
+        transform_map[prop] = key_values_Space[0] = newMat.translation
+
+    for i, key in enumerate(animkeys_array):
+        key.value = transform_map[prop][i]
+
+    return animkeys_array
+
+def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, apply_unit_linear, axis_transform, linearUnit, angularUnit, **settings):
+    # linearUnit = anim_utils.B3D_LINEAR_UNITS[linearUnit]
+    # angularUnit = anim_utils.B3D_ANGULAR_UNITS[angularUnit]
+
+    # fc_unit = anim_utils.B3D_UNIT_TYPE[anim_fc.settings["output"]]
+    # unit_convert = {'LENGTH': anim_utils.units_convertor(linearUnit, 'METERS'),
+    #                 'ROTATION': anim_utils.units_convertor(angularUnit, 'RADIANS')}
+    
+    fc_unit, unit_converter = anim_utils.anim_unit_converter(anim_fc.settings["output"], linearUnit, angularUnit)
                     
     for anim_key in anim_fc.keys:
         # Convert linear and angular units based on global file settings.
         # Additional check for 'scale' property is there because some other doofus made a tool exporting those as 'linear' instead of 'unitless'
         # and we don't want to convert those based on units system.
-        if fc_unit in unit_convert.keys() and anim_fc.node.property != 'scale':
-            anim_key.value = unit_convert[fc_unit](anim_key.value)
+        if not axis_transform and fc_unit in unit_converter.keys() and anim_fc.node.property != 'scale':
+            if not (not apply_unit_linear and fc_unit == 'LENGTH'):
+                anim_key.value = unit_converter[fc_unit](anim_key.value)
 
         ktype = 'KEYFRAME'
         if anim_key.isbreakdown:
@@ -308,11 +446,16 @@ def write_animation(op: bpy.types.Operator,
                     ctx: bpy.context,
                     obj: bpy.types.Object,
                     filename: str,
-                    anim_nodes: list[list[ANIM_FCurve]],
+                    anim_nodes: list[ANIM_FC_PropertyGroup],
                     settings,
+                    apply_unit_linear,
+                    axis_transform,
+                    bake_space_transform,
                     use_custom_props,
                     use_selected_bones,
                     anim_offset,
+                    global_matrix: Matrix,
+                    global_scale,
                     **kwargs):
     animData = obj.animation_data
     if not animData:
@@ -328,32 +471,96 @@ def write_animation(op: bpy.types.Operator,
             doObj = False
         pbone_names = get_posebone_names(ctx, obj, use_selected_bones)
 
-    for i, anim_fcurves in enumerate(anim_nodes):
+    for i, node in enumerate(anim_nodes):
+        # treat as object only the first node if applicable and get parent-space matrix
         if doObj and i>0:
             doObj = False
 
-        for anim_fc in anim_fcurves:
+        if node.name in pbone_names:
+            doObj = False
+            bone = obj.data.bones[node.name]
+            node_matrix_parent_inv = anim_utils.bone_calculate_parentSpace(bone).inverted()
+            if i==0 and bake_space_transform:
+                node_matrix_parent_inv = global_matrix @ node_matrix_parent_inv
+        elif doObj:
+            node_matrix_parent_inv = global_matrix
+        else:
+            continue
+
+        for j, anim_fcgroup in enumerate(node[1:]):
+            if not anim_fcgroup:
+                continue
+
             # skip custom properties based on user flag
-            is_custom_prop = anim_fc.node.property not in anim_utils.ANIM_ATTR_NAMES.keys()
+            is_custom_prop = j==4
             if not use_custom_props and is_custom_prop:
                 continue
 
-            fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
+            print("--------------------------------")
+            # sort the fcurves according to array_index
+            anim_fcgroup = sorted(anim_fcgroup, key=lambda afc: afc.node.array_index)
 
-            if fc_funcRes == None:
-                continue
+            # get frames where keyframes exist for any of the animation curves in a given property array (entire location/rotation/scale)
+            frames = set()
+            frames = get_frames(anim_fcgroup, frames)
+            print(f"j: [{j}], frames: {frames}")
 
-            fc_datapath, fc_group = fc_funcRes
+            # do only for location and euler rotation
+            anim_framegroup_keys = list[list[ANIM_Keyframe]]()
+            if j<2 and axis_transform:
+                # for incomplete euler or location
+                if len(anim_fcgroup) < 3:
+                    anim_fcgroup = complete_animFCgroup(anim_fcgroup, list(frames)[0])
+    
+                anim_framgroup_vals, anim_framegroup_keys = transposeConvert_propArray_to_frameArray(anim_fcgroup, frames, node_matrix_parent_inv.inverted(), **settings)
 
-            # handle an error in case it tries to insert an already existing fcurve   
-            try:    
-                fc = action.fcurves.new(fc_datapath, index=anim_fc.node.array_index, action_group=fc_group)
-            except RuntimeError as e:
-                # operator.report({'INFO'}, ("Couldn't add curve for %r (%s)") % (fc_datapath, e))
-                fc = action.fcurves.find(data_path=fc_datapath, index=anim_fc.node.array_index)
+                n = anim_fcgroup[0].node
+                # for a, b, f in zip(anim_framgroup_vals, anim_framegroup_keys, frames):
+                #     for k, (x, y) in enumerate(zip(a, b)):
+                #         print(f"{n.name}_{n.property}[{k}] | frame: ({f}) {y.time} vals value: {x}, keys value: {y.value}")
 
-            fc = setup_fcurve(fc, anim_fc)
-            write_keyframes(fc, anim_fc, anim_offset, **settings)
+                # get rotation values as reference to properly filter next euler values
+                afc_prop = anim_fcgroup[0].node.property
+                if j == 1:
+                    rotRef_mat = anim_utils.offset_rotation(anim_framgroup_vals[0], afc_prop, node_matrix_parent_inv.decompose()[1])
+                    eulRef = rotRef_mat.to_euler('XYZ')
+                else:
+                    eulRef = None
+
+                # have to loop through all the frames again to do the offset calculations, unfortunately...
+                # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
+                for k, fr in enumerate(frames):
+                    # Do calculations for entire frames
+                    # this updates 'anim_framegroup_keys' list with transformed values
+                    offset_transforms(node_matrix_parent_inv, eulRef, afc_prop, anim_framgroup_vals[k], anim_framegroup_keys[k], not doObj, global_scale)
+
+                    for l, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
+                        print(f"{n.name}_{n.property}[{l}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
+
+                # anim_fcgroup = transpose_frameArray_to_propArray(anim_fcgroup, anim_framegroup_newkeys)
+
+            for anim_fc in anim_fcgroup:
+                if anim_framegroup_keys:
+                    keys_new = [keys_array[anim_fc.node.array_index] for keys_array in anim_framegroup_keys]
+                    anim_fc = ANIM_FCurve(anim_fc.node, anim_fc.settings, keys_new)
+
+                fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
+
+                if fc_funcRes == None:
+                    continue
+
+                fc_datapath, fc_group = fc_funcRes
+                print(f"{anim_fc.node.name}, {anim_fc.node.property} [{anim_fc.node.array_index}]")
+
+                # handle an error in case it tries to insert an already existing fcurve   
+                try:    
+                    fc = action.fcurves.new(fc_datapath, index=anim_fc.node.array_index, action_group=fc_group)
+                except RuntimeError as e:
+                    # operator.report({'INFO'}, ("Couldn't add curve for %r (%s)") % (fc_datapath, e))
+                    fc = action.fcurves.find(data_path=fc_datapath, index=anim_fc.node.array_index)
+
+                fc = setup_fcurve(fc, anim_fc)
+                write_keyframes(fc, anim_fc, anim_offset, apply_unit_linear, axis_transform, **settings)
 
     return
 
@@ -400,16 +607,18 @@ def load(operator: bpy.types.Operator,
             fc_settings, fc_keys = get_animData_elements(fl, ioStream)
 
             # print(f"{i}: SAVING to datablock...")
-            node_id = nodeNames.index(node.name)
             animFC = ANIM_FCurve(node, fc_settings, fc_keys)
-            anim_nodes[node_id].append(animFC)
+            anim_nodes = pack_anim_fcurves(animFC, nodeNames, anim_nodes)
             
-    # for fcs in anim_nodes:
+    anim_nodes = list[ANIM_FC_PropertyGroup](anim_nodes)
+    # for node in anim_nodes:
     #     print("----------------------------------------------")
-    #     print(len(fcs))
-    #     for fc in fcs:
-    #         print(f"{fc.node.name}, {fc.node.property} [{fc.node.array_index}]")
-    #     print("----------------------------------------------")
+    #     print(f"Group: {node[0][0].node.name}")
+    #     for fcgroup in node:
+    #         if fcgroup:
+    #             print("--------------------------------")
+    #             for fc in fcgroup:
+    #                 print(f"{fc.node.name}, {fc.node.property} [{fc.node.array_index}]")
     
     # Close the file to free up memory, since it's no longer needed
     ioStream.close()
