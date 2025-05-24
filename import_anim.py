@@ -361,7 +361,10 @@ def animkey_create_fill(last_key: ANIM_Keyframe, next_key: ANIM_Keyframe, frame:
         return last_key
 
     if last_key and next_key:
-        return animkey_make_simple(frame, (last_key.value+next_key.value)/2) # temporary math, not taking account for frame position
+        # get a normalized frame position (percentage in [0.0-1.0]) between previous and next frames
+        frame_pct = (next_key.time-frame)/(next_key.time-last_key.time)
+        computed_value = anim_utils.lerp(last_key.value, next_key.value, frame_pct)
+        return animkey_make_simple(frame, computed_value)
 
     return animkey_make_simple(frame, 0)
 
@@ -451,8 +454,8 @@ def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, app
     #                 'ROTATION': anim_utils.units_convertor(angularUnit, 'RADIANS')}
     
     fc_unit, unit_converter = anim_utils.anim_unit_converter(anim_fc.settings["output"], linearUnit, angularUnit)
-                    
-    for anim_key in anim_fc.keys:
+
+    for i, anim_key in enumerate(anim_fc.keys):
         # Convert linear and angular units based on global file settings.
         # Additional check for 'scale' property is there because some other doofus made a tool exporting those as 'linear' instead of 'unitless'
         # and we don't want to convert those based on units system.
@@ -464,8 +467,23 @@ def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, app
         if anim_key.isbreakdown:
             ktype = 'BREAKDOWN'
         kp = fc.keyframe_points.insert(frame=anim_offset+anim_key.time, value=anim_key.value, keyframe_type=ktype)
+
+        # check current next keyframe's (if exists) for their connected tangents and set proper interpolation types
+        try:
+            if anim_key.tan_out == anim_fc.keys[i+1].tan_in and anim_key.tan_out in ('step', 'linear'):
+                kp.interpolation = anim_utils.B3D_INTERP_TYPE[anim_key.tan_out]
+                continue
+        except IndexError:
+            pass
+
+        kp.interpolation = 'BEZIER'
+        kp.handle_left_type = anim_utils.B3D_TANGENT_TYPE[anim_key.tan_in]
+        kp.handle_right_type = anim_utils.B3D_TANGENT_TYPE[anim_key.tan_out]
+
         # if anim_fc.node.name == 'Root':
         #     print(f"{anim_fc.node.property}_{anim_fc.node.array_index} of value: {anim_key.value}, at frame: {anim_key.time}")
+
+    fc.update()
 
 def write_animation(op: bpy.types.Operator,
                     ctx: bpy.context,

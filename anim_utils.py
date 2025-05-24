@@ -85,6 +85,19 @@ ANIM_TANGENT_TYPE = {
     'CONSTANT': 'step' # doesn't write tangents, only out tangent
 }
 
+B3D_TANGENT_TYPE = {
+    'auto': 'AUTO_CLAMPED',
+    'spline': 'AUTO',
+    'linear': 'VECTOR',
+    'fixed': 'FREE', # 'ALIGNED' is also an option but this should offer more flexibility
+}
+
+B3D_INTERP_TYPE = {
+    'spline': 'BEZIER',
+    'linear': 'LINEAR', # no tangents
+    'step': 'CONSTANT' # only right-handle tangent
+}
+
 ANIM_ATTR_NAMES = {
     "location": 'translate',
     "rotation_euler": 'rotate',
@@ -137,9 +150,13 @@ def dupe_obj(ctx: bpy.context, obj: bpy.types.Object):
 
     return obj
 
+def lerp(a:float, b:float, time:float):
+    '''Linearly interpolates between A and B, using Time in range [0.0 - 1.0]'''
+    return a+(b-a)*time
+
 def offset_rotation(keys_array, fc_path, node_rot):
     # get a rotation matrix of the animated values
-    # TODO add option to retain original bone rotation  
+    # TODO add option to retain original bone rotation
     if fc_path.endswith('quaternion'):
         key_rotValues = Quaternion(keys_array)
     else:

@@ -362,6 +362,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             # TODO refactor this whole system to avoid making a copy altogether
             action = obj.animation_data.action.copy()
             kwargs_mod["action"] = action
+            is_mesh = True
 
             # Clone and convert the armature to different axis upon export
             if bake_axis:
@@ -375,6 +376,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             if obj.type == 'ARMATURE':
                 # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
                 # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
+                is_mesh = False
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
 
                 if only_deform_bones:
@@ -453,7 +455,10 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                 prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
             if bake_axis:
-                bpy.data.armatures.remove(obj.data)
+                if is_mesh:
+                    bpy.data.meshes.remove(obj.data)
+                else:
+                    bpy.data.armatures.remove(obj.data)
                 context.view_layer.objects.active = obj = obj_og
 
                 # (OBSOLETE) Restore original Armature transforms for non-destructive exporting
