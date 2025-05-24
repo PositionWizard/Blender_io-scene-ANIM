@@ -409,8 +409,12 @@ def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], fr
 
     return values_channel_list, animkeys_channel_list
 
-# Offset transforms for multiple channels at once per transform type
-def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys_array: list, animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float):
+def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys_array: list, animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float) -> tuple[list[ANIM_Keyframe], Euler]:
+    '''Offset transforms for multiple channels at once per transform type.\n
+    Returns a tuple of:
+    - ANIM_Keyframe list
+    - an offset Euler, to be used as reference for converting and proper filtering of next keyframe'''
+
     key_values_Space = [None]*3
     node_loc, node_rot, node_scale = node_matrix_parent.decompose()
 
@@ -426,8 +430,7 @@ def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys
 
         # TODO add option to retain original bone rotation        
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
-        # filter euler values (anti-gimbal lock) by a compatibile euler from the already converted first rotation keyframes, NOT current keyframes pre-conversion
-        # TODO gimbal lock happens either way and I'm thinking maybe the reason is comparing to the first frame's euler rather than PREVIOUS one... doesn't that make more sense?
+        # filter euler values (anti-gimbal lock) by a compatibile euler from previous, converted rotation keyframes
         key_values_Space[1] = rotMat.to_euler('XYZ', eulRef)
 
         transform_map[prop] = key_values_Space[1]
@@ -443,7 +446,7 @@ def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys
     for i, key in enumerate(animkeys_array):
         key.value = transform_map[prop][i]
 
-    return animkeys_array
+    return animkeys_array, transform_map['rotation_euler']
 
 def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, apply_unit_linear, axis_transform, linearUnit, angularUnit, **settings):
     # linearUnit = anim_utils.B3D_LINEAR_UNITS[linearUnit]
@@ -479,6 +482,7 @@ def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, app
         kp.interpolation = 'BEZIER'
         kp.handle_left_type = anim_utils.B3D_TANGENT_TYPE[anim_key.tan_in]
         kp.handle_right_type = anim_utils.B3D_TANGENT_TYPE[anim_key.tan_out]
+        # TODO add proper keyframe handle definition which probably needs to be recalculated for new axes
 
         # if anim_fc.node.name == 'Root':
         #     print(f"{anim_fc.node.property}_{anim_fc.node.array_index} of value: {anim_key.value}, at frame: {anim_key.time}")
@@ -575,7 +579,8 @@ def write_animation(op: bpy.types.Operator,
                 for k, fr in enumerate(frames):
                     # Do calculations for entire frames
                     # this updates 'anim_framegroup_keys' list with transformed values
-                    offset_transforms(node_matrix_parent_inv, eulRef, afc_prop, anim_framgroup_vals[k], anim_framegroup_keys[k], not doObj, global_scale)
+                    # cache a resulted Euler rotation for filtering the next keyframe value properly
+                    eulRef = offset_transforms(node_matrix_parent_inv, eulRef, afc_prop, anim_framgroup_vals[k], anim_framegroup_keys[k], not doObj, global_scale)[1]
 
                     for l, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
                         print(f"{n.name}_{n.property}[{l}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
