@@ -226,30 +226,41 @@ def prepare_custom_prop(node, prop):
     return c_prop
 
 def get_fcDataPath(obj: bpy.types.Object,
-                   anim_fc: ANIM_FCurve,
+                   node_name: str,
+                   property: str,
                    pbone_names: list,
                    is_custom_prop: bool,
-                   doObj: bool):
-    if obj.name != anim_fc.node.name and anim_fc.node.name in pbone_names:
-        pbone = obj.pose.bones[anim_fc.node.name]
+                   doObj: bool,
+                   get_quaternion: bool):
+    if obj.name != node_name and node_name in pbone_names:
+        pbone = obj.pose.bones[node_name]
         pbone_path = pbone.path_from_id()
-        fc_datapath = f'{pbone_path}.{anim_fc.node.property}'
         fc_group = pbone.name
+
+        if get_quaternion:
+            prop = 'rotation_quaternion'
+        else:
+            prop = property
+
+        fc_datapath = f'{pbone_path}.{prop}'
 
         # support for custom properties
         if is_custom_prop:
-            c_prop = prepare_custom_prop(pbone, anim_fc.node.property)
+            c_prop = prepare_custom_prop(pbone, property)
             fc_datapath = pbone_path+c_prop
 
         return fc_datapath, fc_group
 
     elif doObj:
-        fc_datapath = anim_fc.node.property
+        if get_quaternion:
+            fc_datapath = 'rotation_quaternion'
+        else:
+            fc_datapath = property
         fc_group = "Object Transforms"
 
         # support for custom properties
         if is_custom_prop:
-            fc_datapath = prepare_custom_prop(obj, anim_fc.node.property)
+            fc_datapath = prepare_custom_prop(obj, property)
 
         return fc_datapath, fc_group
     
@@ -282,7 +293,7 @@ def setup_fcurve(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve):
         fc.extrapolation = 'CONSTANT'
         mod = fc.modifiers.new('CYCLES')
         mod.mode_before = anim_utils.B3D_CYCLES_TYPE[fc_preInf]
-        mod.mode_before = anim_utils.B3D_CYCLES_TYPE[fc_postInf]
+        mod.mode_after = anim_utils.B3D_CYCLES_TYPE[fc_postInf]
 
     return fc
 
@@ -368,19 +379,18 @@ def animkey_create_fill(last_key: ANIM_Keyframe, next_key: ANIM_Keyframe, frame:
 
     return animkey_make_simple(frame, 0)
 
-def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], frames, node_matrix: Matrix, linearUnit, angularUnit, **settings):
+def anim_create_quaternion_fcgroup(anim_fcnode: ANIM_Node, frame: float, settings=dict()) -> list[ANIM_FCurve]:
+    quaternions = []
+    for i in range(0, 4):                    
+        node_quat = ANIM_Node(anim_fcnode.name, 'rotation_quaternion', i, anim_fcnode.children, -1) 
+        anim_fcurve = ANIM_FCurve(node_quat, settings, [])
+        quaternions.append(anim_fcurve)
+
+    return quaternions
+
+def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], frames, linearUnit, angularUnit, **settings):
     """Transpose a list of fcurves which contain keyframes, into a list of frames containting keyframe groups for each fcurve."""
     
-    loc, rot, scale = node_matrix.decompose()
-    rot = rot.to_euler('XYZ')
-
-    transform_map = {
-        'location': loc,
-        'rotation_euler': rot,
-        'scale': scale
-    }
-
-    print(f"{anim_fcgroup[0].node.name}_{anim_fcgroup[0].node.property}: {transform_map[anim_fcgroup[0].node.property]}")
     animkeys_channel_list, values_channel_list = [], []
 
     # loop through each channel (fcurve) of a property and gather ANIM_Keyframes and values into lists for each frame
@@ -409,7 +419,7 @@ def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], fr
 
     return values_channel_list, animkeys_channel_list
 
-def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys_array: list, animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float) -> tuple[list[ANIM_Keyframe], Euler]:
+def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, rot_mode: str, prop: str, keys_array: list[float], animkeys_array: list[ANIM_Keyframe], apply_scaling: bool, global_scale: float) -> tuple[list[ANIM_Keyframe], Euler]:
     '''Offset transforms for multiple channels at once per transform type.\n
     Returns a tuple of:
     - ANIM_Keyframe list
@@ -429,9 +439,10 @@ def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, prop: str, keys
         rotMat = anim_utils.offset_rotation(keys_array, prop, node_rot)
 
         # TODO add option to retain original bone rotation        
-        # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
-        # filter euler values (anti-gimbal lock) by a compatibile euler from previous, converted rotation keyframes
-        key_values_Space[1] = rotMat.to_euler('XYZ', eulRef)
+        # Source rotation values are always in Euler XYZ because anim format doesn't support different rotation orders.
+        # Filter euler values (anti-gimbal lock) by a compatibile euler from previous, converted rotation keyframes.
+        # If target item rotation mode is quaternion (eulRef==None), then don't convert to eulers.
+        key_values_Space[1] = rotMat.to_euler(rot_mode, eulRef)
 
         transform_map[prop] = key_values_Space[1]
 
@@ -534,6 +545,9 @@ def write_animation(op: bpy.types.Operator,
         else:
             continue
 
+        created_quaternions = list[ANIM_FCurve]()
+        use_converted_quaternions = False
+
         for j, anim_fcgroup in enumerate(node[1:]):
             if not anim_fcgroup:
                 continue
@@ -552,14 +566,24 @@ def write_animation(op: bpy.types.Operator,
             frames = get_frames(anim_fcgroup, frames)
             print(f"j: [{j}], frames: {frames}")
 
+            # 'j' indices represent following node properties:
+            # 0 - location
+            # 1 - rotation_euler
+            # 2 - rotation_quaternion
+            # 3 - scale
+            # 4 - custom
             # do only for location and euler rotation
             anim_framegroup_keys = list[list[ANIM_Keyframe]]()
+            use_converted_quaternions = False
             if j<2 and axis_transform:
-                # for incomplete euler or location
+                # for incomplete euler rotation or location
                 if len(anim_fcgroup) < 3:
                     anim_fcgroup = complete_animFCgroup(anim_fcgroup, list(frames)[0])
-    
-                anim_framgroup_vals, anim_framegroup_keys = transposeConvert_propArray_to_frameArray(anim_fcgroup, frames, node_matrix_parent_inv.inverted(), **settings)
+                    
+                if doObj: rot_mode = obj.rotation_mode
+                else: rot_mode = obj.pose.bones[node.name].rotation_mode
+                # anim_framgroup_vals, anim_framegroup_keys = transposeConvert_propArray_to_frameArray(anim_fcgroup, frames, node_matrix_parent_inv.inverted(), **settings)
+                anim_framgroup_vals, anim_framegroup_keys = transposeConvert_propArray_to_frameArray(anim_fcgroup, frames, **settings)
 
                 n = anim_fcgroup[0].node
                 # for a, b, f in zip(anim_framgroup_vals, anim_framegroup_keys, frames):
@@ -568,31 +592,49 @@ def write_animation(op: bpy.types.Operator,
 
                 # get rotation values as reference to properly filter next euler values
                 afc_prop = anim_fcgroup[0].node.property
+
                 if j == 1:
+                    # source rotation is always euler so if target item expects quaternions then fall back to 'XYZ' euler for now
+                    # create a temp group of quaternion fcurves, to fill it later with keys
+                    if rot_mode == 'QUATERNION':
+                        rot_mode = 'XYZ'
+                        created_quaternions = anim_create_quaternion_fcgroup(anim_fcgroup[0].node, list(frames)[0], anim_fcgroup[0].settings)
+                        use_converted_quaternions = True
                     rotRef_mat = anim_utils.offset_rotation(anim_framgroup_vals[0], afc_prop, node_matrix_parent_inv.decompose()[1])
-                    eulRef = rotRef_mat.to_euler('XYZ')
+                    eulRef = rotRef_mat.to_euler(rot_mode)
                 else:
                     eulRef = None
-
+                    rot_mode = None
+                    
                 # have to loop through all the frames again to do the offset calculations, unfortunately...
                 # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                 for k, fr in enumerate(frames):
                     # Do calculations for entire frames
                     # this updates 'anim_framegroup_keys' list with transformed values
                     # cache a resulted Euler rotation for filtering the next keyframe value properly
-                    eulRef = offset_transforms(node_matrix_parent_inv, eulRef, afc_prop, anim_framgroup_vals[k], anim_framegroup_keys[k], not doObj, global_scale)[1]
+                    eulRef = offset_transforms(node_matrix_parent_inv, eulRef, rot_mode, afc_prop, anim_framgroup_vals[k], anim_framegroup_keys[k], not doObj, global_scale)[1]
 
-                    for l, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
-                        print(f"{n.name}_{n.property}[{l}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
+                    # if quaternion rotation is the target property and anim curve data is filled from current euler anim data in the file, then fill quaternion curves with converted keys
+                    if use_converted_quaternions:
+                        quat = eulRef.to_quaternion()
+                        for l, animfc in enumerate(created_quaternions):
+                            animfc.keys.append(animkey_make_simple(fr, quat[l]))
+
+                    for m, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
+                        print(f"{n.name}_{n.property}[{m}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
 
                 # anim_fcgroup = transpose_frameArray_to_propArray(anim_fcgroup, anim_framegroup_newkeys)
+            
+            # replace the eulers group with created quaternions since we want to use converted values
+            if use_converted_quaternions:
+                anim_fcgroup = created_quaternions
 
             for anim_fc in anim_fcgroup:
-                if anim_framegroup_keys:
+                if anim_framegroup_keys and not use_converted_quaternions:
                     keys_new = [keys_array[anim_fc.node.array_index] for keys_array in anim_framegroup_keys]
                     anim_fc = ANIM_FCurve(anim_fc.node, anim_fc.settings, keys_new)
 
-                fc_funcRes = get_fcDataPath(obj, anim_fc, pbone_names, is_custom_prop, doObj)
+                fc_funcRes = get_fcDataPath(obj, anim_fc.node.name, anim_fc.node.property, pbone_names, is_custom_prop, doObj, use_converted_quaternions)
 
                 if fc_funcRes == None:
                     continue

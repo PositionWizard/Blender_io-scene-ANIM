@@ -263,7 +263,8 @@ class ExportANIM(bpy.types.Operator, ExportHelper):
 
     bake_axis: BoolProperty(
             name="",
-            description="Whether to perform axis conversion or export raw keyframes",
+            description="Whether to perform axis conversion or export raw keyframes\n\n"
+                        "WARNING!: Disabling this for Quaternion rotation will break it!",
             default=True,
         )
 

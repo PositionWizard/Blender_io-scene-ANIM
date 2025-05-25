@@ -86,10 +86,12 @@ ANIM_TANGENT_TYPE = {
 }
 
 B3D_TANGENT_TYPE = {
+    'clamped': 'AUTO_CLAMPED',
     'auto': 'AUTO_CLAMPED',
     'spline': 'AUTO',
     'linear': 'VECTOR',
     'fixed': 'FREE', # 'ALIGNED' is also an option but this should offer more flexibility
+    'step': 'VECTOR'
 }
 
 B3D_INTERP_TYPE = {
