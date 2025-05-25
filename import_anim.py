@@ -404,8 +404,8 @@ def transposeConvert_propArray_to_frameArray(anim_fcgroup: list[ANIM_FCurve], fr
 
             # estimate a new value from existing neighboring keys if there is no keyframe on a current frame of given property channel but other channel has it
             if not afc_key:
-                print("Property on following frame is missing! Filling...")
-                print(f"{afc.node.name}_{afc.node.property}[{afc.node.array_index}], frame: {fr}")
+                # print("Property on following frame is missing! Filling...")
+                # print(f"{afc.node.name}_{afc.node.property}[{afc.node.array_index}], frame: {fr}")
 
                 last_key, next_key = get_neighbor_keys(afc, fr)
                 afc_key = animkey_create_fill(last_key, next_key, fr)
@@ -459,14 +459,7 @@ def offset_transforms(node_matrix_parent: Matrix, eulRef: Euler, rot_mode: str, 
 
     return animkeys_array, transform_map['rotation_euler']
 
-def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, apply_unit_linear, axis_transform, linearUnit, angularUnit, **settings):
-    # linearUnit = anim_utils.B3D_LINEAR_UNITS[linearUnit]
-    # angularUnit = anim_utils.B3D_ANGULAR_UNITS[angularUnit]
-
-    # fc_unit = anim_utils.B3D_UNIT_TYPE[anim_fc.settings["output"]]
-    # unit_convert = {'LENGTH': anim_utils.units_convertor(linearUnit, 'METERS'),
-    #                 'ROTATION': anim_utils.units_convertor(angularUnit, 'RADIANS')}
-    
+def write_keyframes(fc: bpy.types.FCurve, anim_fc: ANIM_FCurve, anim_offset, apply_unit_linear, axis_transform, linearUnit, angularUnit, **settings):  
     fc_unit, unit_converter = anim_utils.anim_unit_converter(anim_fc.settings["output"], linearUnit, angularUnit)
 
     for i, anim_key in enumerate(anim_fc.keys):
@@ -557,14 +550,14 @@ def write_animation(op: bpy.types.Operator,
             if not use_custom_props and is_custom_prop:
                 continue
 
-            print("--------------------------------")
+            # print("--------------------------------")
             # sort the fcurves according to array_index
             anim_fcgroup = sorted(anim_fcgroup, key=lambda afc: afc.node.array_index)
 
             # get frames where keyframes exist for any of the animation curves in a given property array (entire location/rotation/scale)
             frames = set()
             frames = get_frames(anim_fcgroup, frames)
-            print(f"j: [{j}], frames: {frames}")
+            # print(f"j: [{j}], frames: {frames}")
 
             # 'j' indices represent following node properties:
             # 0 - location
@@ -620,8 +613,8 @@ def write_animation(op: bpy.types.Operator,
                         for l, animfc in enumerate(created_quaternions):
                             animfc.keys.append(animkey_make_simple(fr, quat[l]))
 
-                    for m, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
-                        print(f"{n.name}_{n.property}[{m}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
+                    # for m, (x, y) in enumerate(zip(anim_framgroup_vals[k], anim_framegroup_keys[k])):
+                    #     print(f"{n.name}_{n.property}[{m}] | frame: ({fr}) {y.time} value: {x}, new value: {y.value}")
 
                 # anim_fcgroup = transpose_frameArray_to_propArray(anim_fcgroup, anim_framegroup_newkeys)
             
@@ -640,7 +633,7 @@ def write_animation(op: bpy.types.Operator,
                     continue
 
                 fc_datapath, fc_group = fc_funcRes
-                print(f"{anim_fc.node.name}, {anim_fc.node.property} [{anim_fc.node.array_index}]")
+                # print(f"{anim_fc.node.name}, {anim_fc.node.property} [{anim_fc.node.array_index}]")
 
                 # handle an error in case it tries to insert an already existing fcurve   
                 try:    
