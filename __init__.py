@@ -57,7 +57,17 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
     bl_description = "Import animation curves using Autodesk Maya file format"
     bl_options = {'UNDO', 'PRESET'}
 
-    directory: StringProperty()
+    ###########################################
+    # necessary to support multi-file import
+    files: CollectionProperty(
+        type=bpy.types.OperatorFileListElement,
+        options={'HIDDEN', 'SKIP_SAVE'},
+    )
+
+    directory: StringProperty(
+        subtype='DIR_PATH',
+    )
+    ##########################################
 
     filename_ext = ".anim"
     filter_glob: StringProperty(default="*.anim", options={'HIDDEN'})
@@ -133,7 +143,7 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
         pass
 
     def execute(self, context):
-        keywords = self.as_keywords(ignore=("filter_glob", "directory", "ui_tab", "filepath"))
+        keywords = self.as_keywords(ignore=("filter_glob", "directory", "ui_tab", "filepath", "files"))
 
         global_matrix = (axis_conversion(from_forward=self.axis_forward,
                                          from_up=self.axis_up,
@@ -144,7 +154,7 @@ class ImportANIM(bpy.types.Operator, ImportHelper):
 
         from . import import_anim
 
-        return import_anim.load(self, context, filepath=self.filepath, **keywords)
+        return import_anim.load(self, context, directory=self.directory, files=self.files, filepath=self.filepath, file_ext=self.filename_ext, **keywords)
 
 class ANIM_PT_import_include(bpy.types.Panel):
     bl_space_type = 'FILE_BROWSER'

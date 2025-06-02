@@ -12,6 +12,7 @@ if "bpy" in locals():
         importlib.reload(anim_utils)
 
 import bpy, io, time
+import os.path as Path
 from mathutils import Matrix, Vector, Euler
 
 from typing import NamedTuple
@@ -647,30 +648,21 @@ def write_animation(op: bpy.types.Operator,
 
     return
 
-def load(operator: bpy.types.Operator,
-         context: bpy.context,
-         filepath="",
-         **kwargs):
-    result = {'FINISHED'}
-
-    obj = context.active_object
-    if not obj:
-        operator.report({'ERROR'}, ("No active object to import animation for."))
-        return {'CANCELLED'}
-
-    operator.report({'INFO'}, "Importing ANIM...%r" % filepath)
-    start_time = time.process_time()
-
+def read_animation(op: bpy.types.Operator,
+                   ctx: bpy.context,
+                   obj: bpy.types.Object,
+                   filepath="",
+                   **kwargs):
     try:
         with open(filepath, "r", encoding="ascii") as f:
             ioStream = io.StringIO(f.read())
 
     except FileNotFoundError as e:
-        operator.report({'ERROR'}, ("Couldn't open file %r (%s)") % (filepath, e))
+        op.report({'ERROR'}, ("Couldn't open file %r (%s)") % (filepath, e))
         return {'CANCELLED'}
     
     settings, fbody = get_header_elements(ioStream)
-    setupScene(operator, context, **settings, **kwargs)
+    setupScene(op, ctx, **settings, **kwargs)
 
     anim_nodes = []
     nodeNames = []
@@ -706,9 +698,39 @@ def load(operator: bpy.types.Operator,
     # Close the file to free up memory, since it's no longer needed
     ioStream.close()
 
-    filename = bpy.path.basename(filepath).split(".")[0]
-    # Clone and convert the armature to different axis upon export
-    write_animation(operator, context, obj, filename, anim_nodes, settings, **kwargs)
+    return anim_nodes, settings
+
+def load(operator: bpy.types.Operator,
+         context: bpy.context,
+         directory="",
+         files=list[bpy.types.OperatorFileListElement](),
+         filepath="",
+         file_ext="",
+         **kwargs):
+    result = {'FINISHED'}
+
+    obj = context.active_object
+    if not obj:
+        operator.report({'ERROR'}, ("No active object to import animation for."))
+        return {'CANCELLED'}
+    
+    if len(files) == 1:
+        operator.report({'INFO'}, "Importing ANIM...%r" % filepath)
+    else:
+        operator.report({'INFO'}, "Importing %d ANIM files..." % len(files))
+
+    start_time = time.process_time()
+
+    for f in files:
+        filepath = Path.join(directory, f.name)
+
+        read_result = read_animation(operator, context, obj, filepath, **kwargs)
+        if read_result == {'CANCELLED'}:
+            return read_result
+        anim_nodes, settings = read_result
+
+        filename = f.name.removesuffix(file_ext)
+        write_animation(operator, context, obj, filename, anim_nodes, settings, **kwargs)
             
     operator.report({'INFO'}, "Import finished in %.4f sec." % (time.process_time() - start_time))
     return result
