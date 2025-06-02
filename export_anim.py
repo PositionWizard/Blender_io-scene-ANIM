@@ -1,112 +1,19 @@
+if "bpy" in locals():
+    import importlib
+    if "anim_utils" in locals():
+        importlib.reload(anim_utils)
+
 import bpy, io, math, time
 from mathutils import Matrix, Euler, Vector, Quaternion
 
+from . import anim_utils
+
 """
 TODO
-- Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
+- [Reminder to self: This is unfortunately impossible, I'm already doing the best possible thing]
+    Instead of baking all relevant channels, do a proper fcurve swapping when doing axis conversions and armature transformations
+- Bugfix: Keyframes aren't restricted to the time range from the timeline
 """
-
-UNITS = {
-    "METERS": 1.0,  # Ref unit!
-    "KILOMETERS": 0.001,
-    'MILLIMETERS': 1000.0,
-    'CENTIMETERS': 100.0,
-    "FEET": 1.0 / 0.3048,
-    "INCHES": 1.0 / 0.0254,
-    "turn": 1.0,  # Ref unit!
-    "DEGREES": 360.0,
-    "RADIANS": math.pi * 2.0,
-    "SECONDS": 1.0,  # Ref unit!
-}
-
-ANIM_TIME_UNITS = {
-    # in fps
-    15: "game",
-    24: "film",
-    25: "pal",
-    30: "ntsc",
-    48: "show",
-    50: "palf",
-    60: "ntscf"
-}
-
-ANIM_LINEAR_UNITS = {
-    'MILLIMETERS': "mm",
-    'CENTIMETERS': "cm",
-    'METERS': "m",
-    'KILOMETERS': "km",
-    'INCHES': "in",
-    'FEET': "ft",
-    'MILES': "mi",
-}
-
-ANIM_ANGULAR_UNITS = {
-    'DEGREES': "deg",
-    'RADIANS': "rad"
-}
-
-ANIM_CYCLES_TYPE = {
-    'REPEAT': 'cycle',
-    'REPEAT_OFFSET': 'cycleRelative',
-    'MIRROR': 'oscillate',
-    'NONE': None,
-}
-
-ANIM_UNIT_TYPE = { # blender defaults:
-    'TIME': 'time', # frame
-    'LENGTH': 'linear', # meter
-    'ROTATION': 'angular', # radians
-    'NONE': 'unitless'
-}
-
-ANIM_TANGENT_TYPE = {
-    'AUTO_CLAMPED': 'auto',
-    'AUTO': 'spline',
-    'VECTOR': 'linear',
-    'ALIGNED': 'fixed',
-    'FREE': 'fixed',
-
-    # interpolation
-    'BEZIER': 'spline',
-    'LINEAR': 'linear', # doesn't write tangents
-    'CONSTANT': 'step' # doesn't write tangents, only out tangent
-}
-
-ANIM_ATTR_NAMES = {
-    "location": 'translate',
-    "rotation_euler": 'rotate',
-    "rotation_quaternion": 'rotate',
-    "scale": 'scale'
-}
-
-FCURVE_PATHS_NAME_TO_ID = {
-    "location": 0,
-    "rotation_euler": 1,
-    "rotation_quaternion": 2,
-    "scale": 3,
-    "custom": 4
-}
-
-FCURVE_PATHS_ID_TO_NAME = {v: k for k, v in FCURVE_PATHS_NAME_TO_ID.items()}
-
-# Return a convertor between specified units.
-def units_convertor(u_from, u_to):
-    conv = UNITS[u_to] / UNITS[u_from]
-    return lambda v: v * conv
-
-linear_converter = units_convertor('METERS', bpy.context.scene.unit_settings.length_unit) 
-angular_converter = units_convertor('RADIANS', bpy.context.scene.unit_settings.system_rotation)
-
-def dupe_obj(obj):
-    obj = obj.copy()
-    arm = obj.data.copy()
-    obj.data = arm
-
-    bpy.context.scene.collection.objects.link(obj)
-    obj.make_local()
-    obj.data.make_local()
-
-    return obj
 
 # Sanitization replaces all special characters with underscores
 def names_sanitize(name, wildcard=""):
@@ -115,28 +22,6 @@ def names_sanitize(name, wildcard=""):
     else:
         name_clean = ''.join(c if c.isalnum() else '_' for c in name)
     return name_clean
-
-def bone_calculate_parentSpace(bone):
-    # Get bone's parent-space matrix and if bone has no parent, then get armature-space matrix
-    if bone.parent:
-        boneMat = Matrix(bone.parent.matrix_local.inverted() @ bone.matrix_local)
-    else:
-        boneMat = bone.matrix_local
-     
-    return boneMat
-
-def offset_rotation(keys_array, fc_path, node_rot):
-    # get a rotation matrix of the animated values
-    # TODO add option to retain original bone rotation  
-    if fc_path.endswith('quaternion'):
-        key_rotValues = Quaternion(keys_array)
-    else:
-        key_Euler = Euler(keys_array, 'XYZ')
-        key_rotValues = key_Euler.to_quaternion()
-
-    rotMat = node_rot @ key_rotValues
-
-    return rotMat
 
 # Offset transforms for multiple channels at once per transform type
 def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_array, apply_scaling, attr_name, global_scale, **kwargs):
@@ -151,7 +36,7 @@ def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_a
 
     # Transform rotation and translation curves to a new space
     if attr_name == 'rotate':
-        rotMat = offset_rotation(keys_array, fc_path, node_rot)
+        rotMat = anim_utils.offset_rotation(keys_array, fc_path, node_rot)
 
         # TODO add option to retain original bone rotation        
         # final rotation values need to be in Euler XYZ because anim format doesn't support different rotation orders
@@ -189,6 +74,8 @@ def offset_transforms(node_tForm_Space, eulRef, frame, fc_group, fc_path, keys_a
         if not kp_found:
             fc.keyframe_points.insert(frame=frame, value=t_value)
 
+    return key_values_Space[1]
+
 def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kwargs):
     keyString = io.StringIO()
     tab = "  "
@@ -207,7 +94,7 @@ def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kw
         # do the math and avoid dividing by 0
         if x != 0:
             tan = (y)/(x) # get the tangent, also as a slope between keyframe point and left handle
-            tan_angle = angular_converter(math.atan(tan)) # convert back to angular through "atan" and to degrees
+            tan_angle = anim_utils.angular_converter(math.atan(tan)) # convert back to angular through "atan" and to degrees
             
             if tan_angle < 0.001 and tan_angle > -0.001: # round the number
                 tan_angle = 0
@@ -235,22 +122,22 @@ def anim_keys_elements(fc, dt_output, use_time_range, start_time, end_time, **kw
         kp_value = kp.co[1] # get key's value
 
         if dt_output == 'linear':
-            kp_value = linear_converter(kp.co[1])
+            kp_value = anim_utils.linear_converter(kp.co[1])
 
         elif dt_output == 'angular':
-            kp_value = angular_converter(kp.co[1])
+            kp_value = anim_utils.angular_converter(kp.co[1])
 
         keyString.write(f"{kp_value:.6f} ") # write value
 
         if kp.interpolation != 'BEZIER':
-            out_tan = ANIM_TANGENT_TYPE[kp.interpolation]
+            out_tan = anim_utils.ANIM_TANGENT_TYPE[kp.interpolation]
         else:
-            out_tan = ANIM_TANGENT_TYPE[kp.handle_right_type]
+            out_tan = anim_utils.ANIM_TANGENT_TYPE[kp.handle_right_type]
             
         if prev_interp != 'BEZIER' and prev_interp is not None:
-            in_tan = ANIM_TANGENT_TYPE[kp.interpolation]
+            in_tan = anim_utils.ANIM_TANGENT_TYPE[kp.interpolation]
         else:
-            in_tan = ANIM_TANGENT_TYPE[kp.handle_left_type]
+            in_tan = anim_utils.ANIM_TANGENT_TYPE[kp.handle_left_type]
 
         if kp.handle_left_type == 'FREE' or kp.handle_right_type == 'FREE':
             tan_lock = 0
@@ -285,7 +172,7 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
         fc_unit_type = node.bl_rna.properties[fc_path].unit # get the curve unit (degrees, radians, linear, etc.)
 
     dt_input = 'time'
-    dt_output = ANIM_UNIT_TYPE[fc_unit_type]
+    dt_output = anim_utils.ANIM_UNIT_TYPE[fc_unit_type]
     dt_weighted = 1 # Blender always has weighted tangents
     dt_tan = angularUnit
     dt_preInf = dt_postInf = fc.extrapolation.lower() # set either linear or constant
@@ -293,8 +180,8 @@ def anim_animData_elements(fc, node, fc_path, angularUnit, **kwargs):
     # check for any cyclic modifiers and apply a different pre and post infinity type
     for mod in fc.modifiers:
         if mod.type == 'CYCLES':
-            if mod.mode_before != 'NONE': dt_preInf = ANIM_CYCLES_TYPE[mod.mode_before]
-            if mod.mode_after != 'NONE': dt_postInf = ANIM_CYCLES_TYPE[mod.mode_after]
+            if mod.mode_before != 'NONE': dt_preInf = anim_utils.ANIM_CYCLES_TYPE[mod.mode_before]
+            if mod.mode_after != 'NONE': dt_postInf = anim_utils.ANIM_CYCLES_TYPE[mod.mode_after]
             break
  
     animDataString.write(tab+'input {};\n'.format(dt_input))
@@ -355,10 +242,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
         #     axis_ASCII = 87
         # else:
         #     axis_ASCII = 88
-
-        axis_ASCII = 88
         
-        fc_chan = chr(axis_ASCII+fc.array_index) # start counting and return a character of either W, X, Y or Z
+        fc_chan = chr(anim_utils.ASCII_X+fc.array_index) # start counting and return a character of either W, X, Y or Z
         node_name_final, row, child = node_info
 
         fcurveString.write('{0}.{0}{1} {0}{1} '.format(attr_name, fc_chan)) # write basic node info
@@ -388,8 +273,8 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
         fc_i = 0
         for i, fc_group in enumerate(fcGroups):
             # translate attribute names
-            fc_path = FCURVE_PATHS_ID_TO_NAME[i]
-            try: attr = ANIM_ATTR_NAMES[fc_path]
+            fc_path = anim_utils.FCURVE_PATHS_ID_TO_NAME[i]
+            try: attr = anim_utils.ANIM_ATTR_NAMES[fc_path]
             except KeyError: attr = fc_path
 
             # sort the fcurves according to array_index
@@ -408,6 +293,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                 if i<3 and bake_axis:
                     # create fcurves for entire array of a single property if one fcurve was keyed but others are straight up missing
                     # this is needed to properly evaluate fcurves and convert the axes
+                    # if not (full euler/location or full quaternion)
                     if not ((len(fc_group) == 3 and i != 2) or (len(fc_group) == 4)):
                         # only for quaternion
                         if i == 2:
@@ -442,14 +328,14 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                             keys_array_list[j].append(fc_value)
                     
                     # get rotation values as reference to properly filter next euler values
-                    rotRef_mat = offset_rotation(keys_array_list[0], fc_path, node_tForm_Space.decompose()[1])
+                    rotRef_mat = anim_utils.offset_rotation(keys_array_list[0], fc_path, node_tForm_Space.decompose()[1])
                     eulRef = rotRef_mat.to_euler('XYZ')
 
                     # have to loop through all the frames again to do the offset calculations, unfortunately...
                     # this is to avoid wrong offsets due to key modifications right after gathering them (it's offseting keys from already offset ones at previous frame, basically)
                     for j, fr in enumerate(frames):
                         # Do calculations for entire frames
-                        offset_transforms(node_tForm_Space, eulRef, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
+                        eulRef = offset_transforms(node_tForm_Space, eulRef, fr, fc_group, fc_path, keys_array_list[j], apply_boneScale, **kwargs_mod)
 
             for j, fc in enumerate(fc_group):
                 if fc.data_path.endswith('quaternion') and j == 3:
@@ -467,24 +353,6 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             return data_index
         else:
             return -1
-
-    def convert_Axes(obj, global_matrix, global_scale, reverse=False):
-        # Revert changes when done with the object
-        if reverse:
-            global_matrix = global_matrix.inverted()
-            global_scale = 1/global_scale
-
-        if bake_space_transform:
-            dataMat = Matrix.Scale(global_scale, 4) @ global_matrix
-        else: dataMat = Matrix.Scale(global_scale, 4)
-
-        # transform armature or mesh by the new axis
-        # this is basically "apply transforms"
-        if hasattr (obj.data, 'transform'):
-            obj.data.transform(dataMat)
-
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.object.mode_set(mode='OBJECT')
     
     for obj in objs:
         try: obj.animation_data.action.fcurves
@@ -494,19 +362,21 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
             # TODO refactor this whole system to avoid making a copy altogether
             action = obj.animation_data.action.copy()
             kwargs_mod["action"] = action
+            is_mesh = True
 
             # Clone and convert the armature to different axis upon export
             if bake_axis:
                 obj_og = obj
-                obj = dupe_obj(obj)
+                obj = anim_utils.dupe_obj(context, obj)
                 context.view_layer.objects.active = obj
-                convert_Axes(obj, global_matrix, global_scale)
+                anim_utils.convert_axes(obj, global_matrix, global_scale, bake_space_transform)
                 
             objFcurves = [[] for i in range(5)]
 
             if obj.type == 'ARMATURE':
                 # First off, sort all the bone's fcurves so their order aligns with bone hierarchy order.
                 # This is extremely important, since Maya doesn't map curves by attribute name but by hierarchy, top-to-bottom.
+                is_mesh = False
                 fcurves = sorted(action.fcurves, key=lambda fc: get_boneHierarchy_index(fc, obj))
 
                 if only_deform_bones:
@@ -525,7 +395,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                             bone = bpy.types.Bone(obj.data.bones[data_name])
                             bone_id = obj.data.bones.find(data_name)
 
-                            array_id = FCURVE_PATHS_NAME_TO_ID.get(fc_path, 4)
+                            array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc_path, 4)
                             # add the bone to a list and mark as animated bone
                             if boneCheckList[bone_id] == None:
                                 fc_list = [[] for i in range(5)]
@@ -535,7 +405,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                                 # update the entry with any fcurves left
                                 boneCheckList[bone_id][2][array_id].append(fc)
                     else:
-                        array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
+                        array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                         objFcurves[array_id].append(fc)
 
                 # look for all the required but non-animated bones and flag them to skip keying
@@ -567,7 +437,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                         if fcBoneData[1] and bone_frames:
                             pbone = obj.pose.bones[fcBoneData[0].name]
                             # Do matrix transformations only once per bone!
-                            bone_tForm_parentSpace = bone_calculate_parentSpace(fcBoneData[0])
+                            bone_tForm_parentSpace = anim_utils.bone_calculate_parentSpace(fcBoneData[0])
                             prep_node(pbone, bone_info, fcBoneData[2], bone_tForm_parentSpace, True, **kwargs_mod)
 
                         else:
@@ -577,7 +447,7 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                                 
             else:
                 for fc in action.fcurves:
-                    array_id = FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
+                    array_id = anim_utils.FCURVE_PATHS_NAME_TO_ID.get(fc.data_path, 4)
                     objFcurves[array_id].append(fc)
 
                 # write obj animation data
@@ -585,7 +455,10 @@ def anim_fcurve_elements(self, context, objs, sanitize_names, sanitize_spacesOnl
                 prep_node(obj, obj_info, objFcurves, global_matrix, False, **kwargs_mod)
 
             if bake_axis:
-                bpy.data.armatures.remove(obj.data)
+                if is_mesh:
+                    bpy.data.meshes.remove(obj.data)
+                else:
+                    bpy.data.armatures.remove(obj.data)
                 context.view_layer.objects.active = obj = obj_og
 
                 # (OBSOLETE) Restore original Armature transforms for non-destructive exporting
@@ -607,11 +480,11 @@ def anim_header_elements(scene, **kwargs):
     animVersion  = 1.1
     blenderVersion = bpy.app.version_string
     try:
-        timeUnit = ANIM_TIME_UNITS[scene.render.fps]
+        timeUnit = anim_utils.ANIM_TIME_UNITS[scene.render.fps]
     except KeyError: timeUnit = "Unknown Time Unit"
     finally: kwargs_mod["timeUnit"] = timeUnit
-    kwargs_mod["linearUnit"] = linearUnit = ANIM_LINEAR_UNITS[scene.unit_settings.length_unit]
-    kwargs_mod["angularUnit"] = angularUnit = ANIM_ANGULAR_UNITS[scene.unit_settings.system_rotation]
+    kwargs_mod["linearUnit"] = linearUnit = anim_utils.ANIM_LINEAR_UNITS[scene.unit_settings.length_unit]
+    kwargs_mod["angularUnit"] = angularUnit = anim_utils.ANIM_ANGULAR_UNITS[scene.unit_settings.system_rotation]
 
     # use timeline range if no custom range is set
     if not use_time_range:
